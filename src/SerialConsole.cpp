@@ -22,6 +22,7 @@
 #include "Radio.h"
 #include "Telemetry.h"
 #include "LxmfPresence.h"
+#include "Sensors.h"
 #include "Led.h"
 #include "Ble.h"
 
@@ -117,6 +118,27 @@ static void cmd_status(Print& out) {
         out.print("battery_raw="); out.println(raw);
         out.print("battery_mv=");  out.println(rlr::telemetry::read_battery_mv(*s_live));
         out.print("batt_mult=");   out.println(s_live->batt_mult, 4);
+    }
+    // I2C sensor presence + live readings. Mirrors the battery block
+    // above: a presence flag (`*_present=0/1`) on its own line, then
+    // the readings only when present. Format choices match the rest of
+    // STATUS so the webflasher can parse them with one code path.
+    out.print("bme_present="); out.println(rlr::sensors::bme_present() ? 1 : 0);
+    out.print("ina_present="); out.println(rlr::sensors::ina_present() ? 1 : 0);
+    if (rlr::sensors::bme_present()) {
+        float t_c = 0.0f, rh = 0.0f, p = 0.0f;
+        if (rlr::sensors::read_bme(t_c, rh, p)) {
+            out.print("temp_c=");        out.println(t_c, 2);
+            out.print("humidity_pct=");  out.println(rh, 2);
+            out.print("pressure_mbar="); out.println(p, 2);
+        }
+    }
+    if (rlr::sensors::ina_present()) {
+        float v_v = 0.0f, i_ma = 0.0f;
+        if (rlr::sensors::read_ina(v_v, i_ma)) {
+            out.print("ina_v=");  out.println(v_v,  3);
+            out.print("ina_ma="); out.println(i_ma, 2);
+        }
     }
     ok(out);
 }

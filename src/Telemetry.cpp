@@ -13,19 +13,39 @@
 // Sideband `sbapp/sideband/sense.py`). We build that snapshot and push it
 // to a configured collector via opportunistic LXMF delivery (Lxmf.cpp).
 //
-// Telemeter snapshot = msgpack map { sensor_SID: packed_value, ... }:
+//  Telemeter snapshot = msgpack map { sensor_SID: packed_value, ... }:
 //   SID_TIME        0x01  int   (unix seconds; uptime here — no RTC)
 //   SID_LOCATION    0x02  [lat,lon,alt,speed,bearing,accuracy,last_update]
 //                         where lat/lon/alt/... are big-endian struct
 //                         ints wrapped as msgpack bin (per sense.py)
+//   SID_PRESSURE    0x03  [mbar]  (BME280, optional — present at boot?)
 //   SID_BATTERY     0x04  [charge_percent_f64, charging_bool, temperature]
-//   SID_INFORMATION 0x0F  str   (free-form repeater stats with no SID)
+//   SID_TEMPERATURE 0x07  [celsius]  (BME280, optional)
+//   SID_HUMIDITY    0x08  [percent]  (BME280, optional)
+//   SID_INFORMATION 0x0F  str   (free-form repeater stats with no SID,
+//                               including INA3221 voltage+current when
+//                               a sensor module is attached)
 // The whole map is msgpack-packed and embedded as the FIELD_TELEMETRY
 // value (a nested msgpack `bin`), matching Sideband's Telemeter.packed().
+//
+//   Note on TEMPERATURE/HUMIDITY/PRESSURE encoding: Sideband's
+//   upstream `sense.py` packs these as dicts like {"c": float} /
+//   {"percent_relative": float} / {"mbar": float}. The hand-rolled
+//   Msgpack writer in this codebase only ships uinteger-typed map
+//   keys (it uses str() for values), so to stay internally consistent
+//   with the SID_BATTERY / SID_LOCATION precedent — both of which
+//   use flat arrays rather than dicts — we emit single-element
+//   float arrays here too. A Sideband / MeshChat receiver that
+//   handles missing keys gracefully (rather than requiring a
+//   specific shape) will display these correctly; the unit suffix
+//   in the FIELD_TELEMETRY verbose log identifies which. When the
+//   project's msgpack writer grows string-typed map keys we can
+//   convert these to native dicts without breaking the wire format.
 
 #include "Telemetry.h"
 #include "Lxmf.h"
 #include "Msgpack.h"
+#include "Sensors.h"
 #include "Transport.h"
 #include "Radio.h"
 
@@ -39,10 +59,13 @@
 namespace rlr { namespace telemetry {
 
 // Sideband sensor IDs (sbapp/sideband/sense.py).
-static constexpr uint8_t SID_TIME        = 0x01;
-static constexpr uint8_t SID_LOCATION    = 0x02;
-static constexpr uint8_t SID_BATTERY     = 0x04;
-static constexpr uint8_t SID_INFORMATION = 0x0F;
+static constexpr uint8_t SID_TIME         = 0x01;
+static constexpr uint8_t SID_LOCATION     = 0x02;
+static constexpr uint8_t SID_PRESSURE     = 0x03;
+static constexpr uint8_t SID_BATTERY      = 0x04;
+static constexpr uint8_t SID_TEMPERATURE  = 0x07;
+static constexpr uint8_t SID_HUMIDITY     = 0x08;
+static constexpr uint8_t SID_INFORMATION  = 0x0F;
 // LXMF field key (SPEC §5.9.1).
 static constexpr uint8_t FIELD_TELEMETRY = 0x02;
 
@@ -118,12 +141,23 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
     uint32_t now_s   = millis() / 1000UL;
     uint16_t batt_mv = read_battery_mv(cfg);
 
-    bool have_loc = (cfg.latitude_udeg != 0 || cfg.longitude_udeg != 0);
-    bool have_bat = (batt_mv > 0);
+    bool have_loc   = (cfg.latitude_udeg != 0 || cfg.longitude_udeg != 0);
+    bool have_bat   = (batt_mv > 0);
+    bool have_bme   = rlr::sensors::bme_present();
+    bool have_ina   = rlr::sensors::ina_present();
 
-    size_t nsensors = 2;                     // TIME + INFORMATION always
+    // Read environmental + power-rail sensors first (cheap I2C transactions;
+    // the Sensors module probes at boot for presence so we're not making
+    // any assumption about which sensors are wired).
+    float bme_t_c  = 0.0f, bme_rh_pct = 0.0f, bme_p_mbar = 0.0f;
+    float ina_v_v  = 0.0f, ina_i_ma   = 0.0f;
+    if (have_bme) rlr::sensors::read_bme(bme_t_c, bme_rh_pct, bme_p_mbar);
+    if (have_ina) rlr::sensors::read_ina(ina_v_v, ina_i_ma);
+
+    size_t nsensors = 2;                       // TIME + INFORMATION always
     if (have_loc) nsensors++;
     if (have_bat) nsensors++;
+    if (have_bme) nsensors += 3;               // temperature / humidity / pressure
     tele.map_header(nsensors);
 
     // SID_TIME → unix seconds. No RTC/GPS clock on this hardware, so this
@@ -153,10 +187,37 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
         tele.nil();                                           // temperature unknown
     }
 
+    // SID_TEMPERATURE / SID_HUMIDITY / SID_PRESSURE → [value]
+    //
+    // Single-element float arrays rather than the {"c": float} / {"mbar":
+    // float} / {"percent_relative": float} dicts Sideband's upstream
+    // sense.py uses, because this project's Msgpack writer only ships
+    // uinteger map keys (it uses str() for values). Matching the
+    // SID_BATTERY / SID_LOCATION precedent for inner-value shape keeps
+    // the wire format internally consistent. See header comment for the
+    // longer rationale.
+    if (have_bme) {
+        tele.uint(SID_TEMPERATURE);
+        tele.array_header(1);
+        tele.float64((double)bme_t_c);
+
+        tele.uint(SID_HUMIDITY);
+        tele.array_header(1);
+        tele.float64((double)bme_rh_pct);
+
+        tele.uint(SID_PRESSURE);
+        tele.array_header(1);
+        tele.float64((double)bme_p_mbar);
+    }
+
     // SID_INFORMATION → free-form text carrying the repeater stats that
-    // have no dedicated Sideband sensor.
-    char info[96];
-    snprintf(info, sizeof(info),
+    // have no dedicated Sideband sensor. INA3221 voltage + current are
+    // appended when the sensor is attached — Sideband has no fixed SID
+    // for arbitrary power-rail monitoring, and synthesising one would
+    // diverge from spec; appending to SID_INFORMATION keeps the wire
+    // format spec-compliant while still surfacing the readings.
+    char info[128];
+    int n = snprintf(info, sizeof(info),
         "up=%lus heap=%u pin=%lu pout=%lu bat=%umV radio=%s",
         (unsigned long)now_s,
         (unsigned)RNS::Utilities::Memory::heap_available(),
@@ -164,6 +225,12 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
         (unsigned long)rlr::transport::packets_out(),
         (unsigned)batt_mv,
         rlr::radio::online() ? "up" : "down");
+    if (have_ina && n > 0 && (size_t)n < sizeof(info)) {
+        // Truncation-safe append. Reserve a small tail so we never
+        // walk off the end if snprintf consumed almost all of info[].
+        snprintf(info + n, sizeof(info) - (size_t)n,
+                 " ina_v=%.2fV ina_i=%.1fmA", (double)ina_v_v, (double)ina_i_ma);
+    }
     tele.uint(SID_INFORMATION);
     tele.str(info);
 }

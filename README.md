@@ -50,7 +50,11 @@ change the display name, commit. Under 2 minutes per node after the first.
   also pushes spec-compliant LXMF telemetry (`FIELD_TELEMETRY`) — battery,
   uptime, heap, packet counters, and GPS location — to that collector,
   visible natively in Sideband / MeshChat's telemetry view (no custom
-  receiver needed). To consume this telemetry in your own app, see
+  receiver needed). On boards with an exposed I2C header (currently
+  RAK4631), a BME280 (temperature / humidity / pressure) or INA3221
+  (bus voltage / current) sensor module is auto-detected at boot and
+  folded into the same telemetry message. To consume this telemetry in
+  your own app, see
   [`docs/TELEMETRY_INTEGRATION.md`](docs/TELEMETRY_INTEGRATION.md).
 - **Location-aware.** Configure latitude, longitude, and altitude (MSL)
   — included in the telemetry snapshot. Use the "Use my location" button

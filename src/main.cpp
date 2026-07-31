@@ -17,6 +17,7 @@
 #include "Transport.h"
 #include "Telemetry.h"
 #include "LxmfPresence.h"
+#include "Sensors.h"
 #include "SerialConsole.h"
 #include "Ble.h"
 
@@ -36,6 +37,11 @@ static rlr::Config g_config{};
 //   4. Initialise the Reticulum transport stack on top of the radio
 //   5. Initialise the serial provisioning console
 //   6. Initialise telemetry + LXMF presence subsystems
+//   7. Initialise optional I2C sensors (BME280 / INA3221, gated on
+//      HAS_I2C_HEADER). Runs early because sensor probing holds the
+//      Wire peripheral for ~tens of ms, and we want it settled before
+//      any I2C-routed subsystem (BLE GATTS, future peripherals)
+//      starts up.
 // -------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
@@ -112,6 +118,14 @@ void setup() {
 
     // --- BLE (before radio — available even if radio fails) ---
     rlr::ble::init(g_config);
+
+    // --- Optional I2C sensors (BME280 / INA3221) ---
+    // init() is a no-op on boards without HAS_I2C_HEADER, so this is
+    // safe to call unconditionally. Wire.begin() touches the I2C0
+    // peripheral; we want this settled before BLE GATTS / nRF52 TWI
+    // sharing happens (none today, but leaves room for future
+    // peripherals without a regression here).
+    rlr::sensors::init();
 
     // --- Radio + Reticulum transport ---
     // Strict order:
