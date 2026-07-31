@@ -96,13 +96,28 @@
 #define PIN_VEXT_EN             37    // P1.05  ACTIVE HIGH — gates SX1262 3V3
 #define VEXT_SETTLE_MS          10
 
-// Battery sense. The RAK4631 WisCore wires a 1:3 voltage divider
-// from the battery rail into P0.04 (AIN2). AREF on this board is
-// 3.0 V, so the raw 12-bit ADC reading maps to mV via roughly
-// (adc / 4095) * 3000 * 3 = adc * 2.198 mV/LSB. Used as the
-// first-boot default for DEFAULT_CONFIG_BATT_MULT below; the
-// webflasher's CALIBRATE BATTERY flow will refine per-device.
-#define PIN_BATTERY             4     // P0.04
+// Battery sense. CORRECTED per Meshtastic's confirmed-working RAK4631
+// variant (variants/nrf52840/rak4631/variant.h): BATTERY_PIN = PIN_A0,
+// which their own comment maps to "RAK4630 AIN0 = nRF52840 AIN3 = Pin
+// 5" — i.e. P0.05/AIN3, NOT P0.04/AIN2 as this header previously used.
+// Confirmed as the actual bug via a real device: with a LiPo always
+// attached, P0.04 read a near-zero, meaningless raw value (~190/4095)
+// that didn't move with real battery state — consistent with reading
+// an unrelated/floating pin rather than the battery divider node.
+//
+// Multiplier also corrected to match RAK's own official reference
+// (RAKWireless/WisBlock examples/RAK4630/power/RAK4630_Battery_Level_Detect):
+// the WisCore divider is 1.5 MOhm + 1 MOhm with an empirical
+// compensation constant of 1.73 (VBAT_DIVIDER_COMP), not a clean 1:3
+// ratio. RAK's own formula: VBAT_MV_PER_LSB = 3000/4096 = 0.732421875,
+// REAL_VBAT_MV_PER_LSB = VBAT_DIVIDER_COMP * VBAT_MV_PER_LSB = 1.73 *
+// 0.732421875 = 1.26709 mV/LSB. The previous 2.198 assumed a simple
+// 1:3 divider without RAK's compensation factor and was wrong on this
+// board regardless of the pin fix. Both defaults are still first-boot
+// guesses — the webflasher's CALIBRATE BATTERY flow refines per-device
+// against a multimeter, but this default should now land much closer
+// on unconfigured devices.
+#define PIN_BATTERY             5     // P0.05 (AIN3) — was P0.04/AIN2, confirmed wrong on hardware
 #define BATTERY_ADC_RESOLUTION  12
 
 // LED — RAK4631 Green LED1 on P1.03 (pin 35 in pca10056 numbering).
@@ -124,12 +139,14 @@
 // the regulatory region. Matches the bench defaults we use for the
 // Faketec except for the TX power cap, which is lower here because
 // the RAK4631 has no external PA and the SX1262 core is the final
-// amplifier. batt_mult is a first guess for the 1:3 divider — user
-// runs CALIBRATE BATTERY <measured_mv> on first boot.
+// amplifier. batt_mult is RAK's own official divider constant (see
+// the PIN_BATTERY comment above for derivation) — still a first-boot
+// guess; user runs CALIBRATE BATTERY <measured_mv> on first boot to
+// refine it per-device.
 #define DEFAULT_CONFIG_FREQ_HZ          915000000UL
 #define DEFAULT_CONFIG_BW_HZ            125000UL
 #define DEFAULT_CONFIG_SF               10
 #define DEFAULT_CONFIG_CR               5
 #define DEFAULT_CONFIG_TXP_DBM          22
-#define DEFAULT_CONFIG_BATT_MULT        2.198f
+#define DEFAULT_CONFIG_BATT_MULT        1.26709f
 #define DEFAULT_CONFIG_DISPLAY_NAME     "Rptr-RAK4631"
