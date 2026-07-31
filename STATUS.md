@@ -22,6 +22,12 @@ suite.
 - **Telemetry** — spec-compliant LXMF `FIELD_TELEMETRY` pushed to a
   configured collector (Sideband Telemeter format), replacing the old
   ASCII `rlr.telemetry` beacon. Gated on a configured `collector` hash.
+  When the board defines `HAS_I2C_HEADER 1` (currently RAK4631 only),
+  a BME280 / INA3221 sensor module on the I2C bus is auto-detected at
+  boot and its readings are merged in: temp / humidity / pressure get
+  their own Sideband sensor IDs, INA3221 power-rail data appends to
+  the free-form `SID_INFORMATION` text (no dedicated Sideband SID for
+  arbitrary rail monitoring).
 - **LXMF presence** — announces on `lxmf.delivery` so MeshChat /
   Sideband show the node by name.
 - **BLE / web flasher / serial console** — all live; see `README.md`.
@@ -42,6 +48,18 @@ was removed as redundant. Background in `docs/RATCHET_PROTOCOL.md`.
   layout and the opportunistic LXMF send path build and link, but a
   live round-trip against a real Sideband instance is still the
   authoritative check.
+- **Hardware validation of I2C sensor telemetry.** BME280 +
+  INA3221 support is brand new and has never been tested against a
+  physical WisBlock sensor module on the bench. The auto-detect
+  probes, the SID encoding, and the lib_deps additions are
+  unverified on real hardware. Treat readings as best-effort until a
+  side-by-side multimeter / known-good sensor confirms calibration.
+  SID_TEMPERATURE / SID_HUMIDITY / SID_PRESSURE are packed as
+  single-element float arrays (matching the SID_BATTERY /
+  SID_LOCATION precedent in `src/Telemetry.cpp`), not as the
+  string-keyed dicts upstream `sense.py` emits natively — see the
+  header of `Telemetry.cpp` for why and what a future msgpack-writer
+  extension would have to do to flip this.
 - **No RTC.** Telemetry/LXMF timestamps are monotonic uptime, not
   wall-clock; receivers display against their own receive clock.
 - **No packet fragmentation** beyond RNode split-packet (≤508 B).

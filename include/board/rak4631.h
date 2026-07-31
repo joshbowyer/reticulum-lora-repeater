@@ -20,6 +20,18 @@
 //  when this header landed. First user to flash should verify RX
 //  works end-to-end and recalibrate batt_mult against a multimeter
 //  via the serial console / webflasher.
+//
+//  RAK4631 PIN_BATTERY COMMUNITY NOTE: an unverified, repo-only
+//  community report mentioned a hardware-revision pin discrepancy
+//  affecting PIN_BATTERY / the AIN mapping. The revision letter was
+//  not confirmed in the RAK or Meshtastic public issue trackers at
+//  the time of writing, and the report did not survive triage. The
+//  existing serial console / webflasher CALIBRATE BATTERY flow lets
+//  you derive the correct batt_mult from a multimeter reading
+//  regardless of which physical pin the divider actually lands on,
+//  so we deliberately leave PIN_BATTERY at its P0.04 default and
+//  recommend empirical calibration on first boot rather than
+//  guessing per-revision pin maps from hearsay.
 // =====================================================================
 
 // ---- Board identity ------------------------------------------------
@@ -40,6 +52,7 @@
 #define HAS_DISPLAY             0
 #define HAS_BLE                 1
 #define HAS_PMU                 0
+#define HAS_I2C_HEADER          1      // WisBlock IO header exposes I2C; Sensors.cpp auto-probes for BME280 + INA3221 at boot
 
 // ---- MCU / SRAM budget --------------------------------------------
 #define BOARD_MCU               "nRF52840"
@@ -95,6 +108,15 @@
 // LED — RAK4631 Green LED1 on P1.03 (pin 35 in pca10056 numbering).
 #define PIN_LED                 35
 #define LED_ACTIVE_HIGH         1
+
+// I2C — the WisBlock IO header exposes I2C on P0.26 (SDA) and P0.27
+// (SCL), which are the same GPIOs the Adafruit nRF52 BSP variant for
+// nrf52840_dk_adafruit selects as the default Wire pins. Sensors.cpp
+// calls Wire.begin() with no arguments, so it picks up these board
+// defaults automatically and we don't have to redeclare PIN_SDA /
+// PIN_SCL — matching how the rest of the codebase doesn't pin every
+// internal BSP default. If a specific WisBlock base / sensor module
+// uses different traces, override here.
 
 // ---- Default config values for first boot -------------------------
 // US ISM band with conservative TX power — the webflasher's CONFIG
