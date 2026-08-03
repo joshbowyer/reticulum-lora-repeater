@@ -20,7 +20,7 @@ namespace rlr {
 #pragma pack(push, 1)
 struct Config {
     // ---- schema ----
-    uint16_t version;               // 1 = original, 2 = +BT/location, 3 = +collector
+    uint16_t version;               // 1 = original, 2 = +BT/location, 3 = +collector, 4 = +INA channel labels
     uint8_t  log_level;             // 0=quiet, 1=normal (default), 2=verbose
     uint8_t  _reserved;
 
@@ -50,9 +50,12 @@ struct Config {
     // ---- identity ----
     char     display_name[32];      // NUL-terminated UTF-8
 
-    // ---- telemetry collector (v3) ----
+    // ---- telemetry collector (v3) + INA channel labels (v4) ----
     uint8_t  collector_hash[16];    // recipient lxmf.delivery dest hash for
                                     // FIELD_TELEMETRY pushes; all-zero = unset
+    char ina_ch1_label[8];           // optional free-text label, e.g. "solar" — empty = unset, use "ch1"
+    char ina_ch2_label[8];           // e.g. "battery"
+    char ina_ch3_label[8];           // e.g. "load"
 
     // ---- integrity ----
     uint32_t crc32;                 // CRC over all preceding bytes

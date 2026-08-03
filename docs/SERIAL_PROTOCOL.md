@@ -68,6 +68,9 @@ Valid keys:
 | `tele_interval_ms` | uint32 | 60000 – 86400000 |
 | `lxmf_interval_ms` | uint32 | 60000 – 7200000 |
 | `display_name` | string | up to 31 bytes UTF-8 |
+| `ina_ch1_label` | string | up to 7 bytes UTF-8; empty = unset/use raw channel number (`ch1`) |
+| `ina_ch2_label` | string | up to 7 bytes UTF-8; empty = unset/use raw channel number (`ch2`) |
+| `ina_ch3_label` | string | up to 7 bytes UTF-8; empty = unset/use raw channel number (`ch3`) |
 
 ### `CONFIG RESET`
 → `OK`

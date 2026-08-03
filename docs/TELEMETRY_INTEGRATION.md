@@ -101,10 +101,17 @@ emits a subset; ignore unknown SIDs gracefully.
 |------|---------------|----------------------------------------------------------------|
 | 0x01 | TIME          | `uint` — seconds                                               |
 | 0x02 | LOCATION      | `array[7]` (see below) — present only if a location is configured |
+| 0x03 | PRESSURE      | `array[1]` — single `float64` value in mbar; present with BME280 |
 | 0x04 | BATTERY       | `array[3]` (see below) — present only if a battery is read     |
+| 0x07 | TEMPERATURE   | `array[1]` — single `float64` value in °C; present with BME280 |
+| 0x08 | HUMIDITY      | `array[1]` — single `float64` value in % RH; present with BME280 |
 | 0x0F | INFORMATION   | `str` — free-form human-readable stats                         |
 
 TIME and INFORMATION are always present. LOCATION and BATTERY are conditional.
+The BME280 SIDs PRESSURE, TEMPERATURE, and HUMIDITY are also conditional and
+are each encoded as a single-element `float64` array (`[value]`). This is a
+deliberate deviation from upstream Sideband `sense.py`, which uses dicts for
+these SIDs; see the sender's `Telemetry.cpp` comment for the rationale.
 
 ### 5.1 SID 0x01 — TIME
 - A single unsigned integer of **seconds**.
@@ -161,8 +168,17 @@ the form:
 up=<uptime_s>s heap=<bytes> pin=<packets_in> pout=<packets_out> bat=<mV>mV radio=<up|down>
 ```
 
-Display it verbatim, or parse the `key=value` tokens if you want structured
-fields. Treat the format as informational and subject to change.
+When an INA3221 is present, the string also contains all three channel readings:
+
+```
+ <label>_v=<volts>V <label>_i=<milliamps>mA <label>_v=<volts>V <label>_i=<milliamps>mA <label>_v=<volts>V <label>_i=<milliamps>mA
+```
+
+Each channel's `<label>` is taken from the operator-configured
+`Config.ina_ch1_label`, `Config.ina_ch2_label`, or `Config.ina_ch3_label`; an
+empty label falls back to `ch1`, `ch2`, or `ch3`. The format is informational
+and subject to change. Display it verbatim, or parse the `key=value` tokens if
+you want structured fields.
 
 ---
 
@@ -194,8 +210,8 @@ clarity; the wire is msgpack, and `fields[2]` is itself a nested msgpack blob):
        <bin 2B>,  // accuracy(0)
        1234       // last_update (uptime seconds)
      ],
-  4: [ 87.5, false, null ],         // BATTERY: percent, charging, temp
-  15: "up=1234s heap=48000 pin=28 pout=12 bat=3900mV radio=up"  // INFORMATION
+     4: [ 87.5, false, null ],         // BATTERY: percent, charging, temp
+     15: "up=1234s heap=48000 pin=28 pout=12 bat=3900mV radio=up solar_v=18.42V solar_i=312.5mA battery_v=4.08V battery_i=-85.2mA load_v=4.07V load_i=227.3mA"  // INFORMATION
 }
 ```
 

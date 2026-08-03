@@ -23,8 +23,9 @@
 //   SID_TEMPERATURE 0x07  [celsius]  (BME280, optional)
 //   SID_HUMIDITY    0x08  [percent]  (BME280, optional)
 //   SID_INFORMATION 0x0F  str   (free-form repeater stats with no SID,
-//                               including INA3221 voltage+current when
-//                               a sensor module is attached)
+//                               including all 3 INA3221 channel voltage+
+//                               current readings when a sensor module is
+//                               attached; channels use Config labels when set)
 // The whole map is msgpack-packed and embedded as the FIELD_TELEMETRY
 // value (a nested msgpack `bin`), matching Sideband's Telemeter.packed().
 //
@@ -150,9 +151,13 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
     // the Sensors module probes at boot for presence so we're not making
     // any assumption about which sensors are wired).
     float bme_t_c  = 0.0f, bme_rh_pct = 0.0f, bme_p_mbar = 0.0f;
-    float ina_v_v  = 0.0f, ina_i_ma   = 0.0f;
+    float ina_ch1_v = 0.0f, ina_ch1_ma = 0.0f;
+    float ina_ch2_v = 0.0f, ina_ch2_ma = 0.0f;
+    float ina_ch3_v = 0.0f, ina_ch3_ma = 0.0f;
     if (have_bme) rlr::sensors::read_bme(bme_t_c, bme_rh_pct, bme_p_mbar);
-    if (have_ina) rlr::sensors::read_ina(ina_v_v, ina_i_ma);
+    if (have_ina) rlr::sensors::read_ina(ina_ch1_v, ina_ch1_ma,
+                                         ina_ch2_v, ina_ch2_ma,
+                                         ina_ch3_v, ina_ch3_ma);
 
     size_t nsensors = 2;                       // TIME + INFORMATION always
     if (have_loc) nsensors++;
@@ -216,7 +221,7 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
     // for arbitrary power-rail monitoring, and synthesising one would
     // diverge from spec; appending to SID_INFORMATION keeps the wire
     // format spec-compliant while still surfacing the readings.
-    char info[128];
+    char info[256];
     int n = snprintf(info, sizeof(info),
         "up=%lus heap=%u pin=%lu pout=%lu bat=%umV radio=%s",
         (unsigned long)now_s,
@@ -225,11 +230,20 @@ static void build_telemeter(const Config& cfg, msgpack::Writer& tele) {
         (unsigned long)rlr::transport::packets_out(),
         (unsigned)batt_mv,
         rlr::radio::online() ? "up" : "down");
-    if (have_ina && n > 0 && (size_t)n < sizeof(info)) {
-        // Truncation-safe append. Reserve a small tail so we never
-        // walk off the end if snprintf consumed almost all of info[].
-        snprintf(info + n, sizeof(info) - (size_t)n,
-                 " ina_v=%.2fV ina_i=%.1fmA", (double)ina_v_v, (double)ina_i_ma);
+    if (have_ina && n > 0) {
+        const char* ch1_label = cfg.ina_ch1_label[0] ? cfg.ina_ch1_label : "ch1";
+        const char* ch2_label = cfg.ina_ch2_label[0] ? cfg.ina_ch2_label : "ch2";
+        const char* ch3_label = cfg.ina_ch3_label[0] ? cfg.ina_ch3_label : "ch3";
+        size_t used = ((size_t)n < sizeof(info)) ? (size_t)n : sizeof(info) - 1;
+        // Truncation-safe append: snprintf never writes past the remaining
+        // buffer, and silently clips the optional sensor text if needed.
+        if (used < sizeof(info)) {
+            snprintf(info + used, sizeof(info) - used,
+                     " %s_v=%.2fV %s_i=%.1fmA %s_v=%.2fV %s_i=%.1fmA %s_v=%.2fV %s_i=%.1fmA",
+                     ch1_label, (double)ina_ch1_v, ch1_label, (double)ina_ch1_ma,
+                     ch2_label, (double)ina_ch2_v, ch2_label, (double)ina_ch2_ma,
+                     ch3_label, (double)ina_ch3_v, ch3_label, (double)ina_ch3_ma);
+        }
     }
     tele.uint(SID_INFORMATION);
     tele.str(info);

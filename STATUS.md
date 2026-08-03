@@ -16,8 +16,8 @@ suite.
   transport node: announce rebroadcast, DATA/PROOF forwarding, RNode
   split-packet reassembly. Forwarding for transit packets is added by
   the one remaining microReticulum patch in `scripts/pre_build.py`.
-- **Config** — schema **v3**, persisted to internal flash via
-  microStore. v1/v2 records auto-migrate forward. Editable over USB
+- **Config** — schema **v4**, persisted to internal flash via
+  microStore. v1/v2/v3 records auto-migrate forward. Editable over USB
   serial, BLE, and the web console. See `docs/CONFIG_FORMAT.md`.
 - **Telemetry** — spec-compliant LXMF `FIELD_TELEMETRY` pushed to a
   configured collector (Sideband Telemeter format), replacing the old
@@ -25,8 +25,9 @@ suite.
   When the board defines `HAS_I2C_HEADER 1` (currently RAK4631 only),
   a BME280 / INA3221 sensor module on the I2C bus is auto-detected at
   boot and its readings are merged in: temp / humidity / pressure get
-  their own Sideband sensor IDs, INA3221 power-rail data appends to
-  the free-form `SID_INFORMATION` text (no dedicated Sideband SID for
+  their own Sideband sensor IDs, INA3221's three channel readings append to
+  the free-form `SID_INFORMATION` text with optional per-channel operator
+  labels (falling back to `ch1` / `ch2` / `ch3`; no dedicated Sideband SID for
   arbitrary rail monitoring).
 - **LXMF presence** — announces on `lxmf.delivery` so MeshChat /
   Sideband show the node by name.

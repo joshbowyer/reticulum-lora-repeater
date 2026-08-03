@@ -92,6 +92,7 @@ static void cmd_help(Print& out) {
     out.println("  CONFIG COMMIT              - persist staging + reboot");
     out.println("  CALIBRATE BATTERY <mv>     - derive batt_mult from measured voltage");
     out.println("  ANNOUNCE                   - force LXMF presence announce + telemetry push now");
+    out.println("  I2C SCAN                   - scan I2C bus, print addresses that ACK");
     ok(out);
 }
 
@@ -134,10 +135,16 @@ static void cmd_status(Print& out) {
         }
     }
     if (rlr::sensors::ina_present()) {
-        float v_v = 0.0f, i_ma = 0.0f;
-        if (rlr::sensors::read_ina(v_v, i_ma)) {
-            out.print("ina_v=");  out.println(v_v,  3);
-            out.print("ina_ma="); out.println(i_ma, 2);
+        float ch1_v = 0.0f, ch1_ma = 0.0f;
+        float ch2_v = 0.0f, ch2_ma = 0.0f;
+        float ch3_v = 0.0f, ch3_ma = 0.0f;
+        if (rlr::sensors::read_ina(ch1_v, ch1_ma, ch2_v, ch2_ma, ch3_v, ch3_ma)) {
+            out.print("ina_ch1_v=");  out.println(ch1_v,  3);
+            out.print("ina_ch1_ma="); out.println(ch1_ma, 2);
+            out.print("ina_ch2_v=");  out.println(ch2_v,  3);
+            out.print("ina_ch2_ma="); out.println(ch2_ma, 2);
+            out.print("ina_ch3_v=");  out.println(ch3_v,  3);
+            out.print("ina_ch3_ma="); out.println(ch3_ma, 2);
         }
     }
     ok(out);
@@ -225,7 +232,10 @@ static void cmd_config_set(Print& out, char* rest) {
     if (*rest == '\0') { err(out, "usage: CONFIG SET <key> <value>"); return; }
     char* value = split_kv(rest);
     const char* key = rest;
-    if (*value == '\0') { err(out, "missing value"); return; }
+    if (*value == '\0' && strcmp(key, "ina_ch1_label") != 0 &&
+        strcmp(key, "ina_ch2_label") != 0 && strcmp(key, "ina_ch3_label") != 0) {
+        err(out, "missing value"); return;
+    }
     const char* e = config::set_field(s_staging, key, value);
     if (e) { err(out, e); return; }
     ok(out);
@@ -313,6 +323,25 @@ static void dispatch(char* line, Print& out) {
         out.println("sending telemetry message...");
         rlr::telemetry::send_now(*s_live);
         ok(out);
+        return;
+    }
+
+    // I2C SCAN — diagnostic bus scan
+    if (strncmp(upper_copy, "I2C", 3) == 0 &&
+        (upper_copy[3] == ' ' || upper_copy[3] == '\t')) {
+
+        char* sub = ltrim(line + 3);
+        char upper_sub[sizeof(s_line)];
+        strncpy(upper_sub, sub, sizeof(upper_sub));
+        upper_sub[sizeof(upper_sub) - 1] = '\0';
+        upper(upper_sub);
+
+        if (strcmp(upper_sub, "SCAN") == 0) {
+            rlr::sensors::scan_bus(out);
+            ok(out);
+            return;
+        }
+        err(out, "unknown I2C subcommand (try HELP)");
         return;
     }
 

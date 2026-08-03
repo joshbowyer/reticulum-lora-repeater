@@ -1,7 +1,9 @@
 // src/Sensors.cpp — see Sensors.h.
 //
-// I2C sensor probing and reading for the optional BME280 (temp /
-// humidity / pressure) and INA3221 (bus voltage / current) chips.
+// I2C sensor power sequencing, probing, and reading for the optional
+// BME280 (temp / humidity / pressure) and INA3221 (bus voltage / current)
+// chips. Boards that define PIN_WB_IO2 enable and settle the switched
+// WisBlock IO-slot rail before Wire starts and sensor probing begins.
 // All I2C / Adafruit_BusIO code is gated on HAS_I2C_HEADER so boards
 // without an exposed I2C header don't pay the flash or RAM cost —
 // mirroring the `#if defined(PIN_BATTERY) && PIN_BATTERY >= 0` guard
@@ -40,16 +42,43 @@ static bool s_ina_present = false;
 static constexpr uint8_t BME280_ADDR_PRIMARY   = 0x76;
 static constexpr uint8_t BME280_ADDR_SECONDARY = 0x77;
 static constexpr uint8_t INA3221_ADDR_DEFAULT  = 0x40;
+// INA3221 A0 pin strapping selects one of 4 addresses (datasheet
+// Table: A0=GND->0x40, A0=VCC->0x41, A0=SDA->0x42, A0=SCL->0x43).
+// Off-the-shelf WisBlock/RAK sensor boards have been observed at
+// 0x42 (A0 tied to SDA), so probe all 4 rather than assuming GND
+// strapping — same rationale as the BME280 primary/secondary probe
+// just above.
+static constexpr uint8_t INA3221_ADDR_CANDIDATES[] = { 0x40, 0x41, 0x42, 0x43 };
 
+// Power any board-specific switched sensor rail before starting Wire,
+// then probe each supported sensor at its default I2C address.
 bool init() {
 #if !(defined(HAS_I2C_HEADER) && HAS_I2C_HEADER)
     Serial.println("Sensors: HAS_I2C_HEADER=0 — no sensor probing");
     return true;
 #else
-    // Initialise the Wire peripheral with the BSP-default SDA / SCL
-    // pins (the Adafruit nRF52 variant for nrf52840_dk_adafruit
-    // exposes these as Wire-defined constants; no need to pass explicit
-    // pin numbers unless a board requires non-default traces).
+#if defined(PIN_WB_IO2) && PIN_WB_IO2 >= 0
+    pinMode(PIN_WB_IO2, OUTPUT);
+    digitalWrite(PIN_WB_IO2, HIGH);
+    #if defined(WB_IO2_SETTLE_MS)
+        delay(WB_IO2_SETTLE_MS);
+    #else
+        delay(10);
+    #endif
+    Serial.println("Sensors: WisBlock IO slot power (WB_IO2) enabled");
+#endif
+
+    // Boards whose I2C traces don't match the BSP's default Wire pins
+    // (e.g. RAK4631: the generic pca10056 BSP defaults to P0.26/P0.27,
+    // but the WisBlock I2C1 bus actually used is P0.13/P0.14) must
+    // override via Wire.setPins() BEFORE Wire.begin() — begin() reads
+    // the pin selection immediately and setPins() after begin() has no
+    // effect. Confirmed via hardware testing: without this override,
+    // Wire.begin() succeeds silently but every address NAKs because
+    // nothing is physically wired to P0.26/P0.27.
+#if defined(PIN_I2C_SDA) && defined(PIN_I2C_SCL)
+    Wire.setPins(PIN_I2C_SDA, PIN_I2C_SCL);
+#endif
     Wire.begin();
 
     // ---- BME280 probe ----
@@ -74,16 +103,21 @@ bool init() {
     }
 
     // ---- INA3221 probe ----
-    // Adafruit_INA3221::begin() with no args talks to the default
-    // 0x40 address (A0=GND). Returns true on successful reset / ID
-    // register read.
+    // Try each of the 4 A0-strap addresses in turn (see
+    // INA3221_ADDR_CANDIDATES comment above) — off-the-shelf WisBlock
+    // sensor boards have been observed at 0x42, not the 0x40 GND-strap
+    // default, so don't assume GND strapping.
     s_ina_present = false;
-    if (s_ina.begin()) {
-        s_ina_present = true;
-        Serial.print("Sensors: INA3221 found at default 0x");
-        Serial.print(INA3221_ADDR_DEFAULT, HEX);
-        Serial.println();
-    } else {
+    for (uint8_t addr : INA3221_ADDR_CANDIDATES) {
+        if (s_ina.begin(addr)) {
+            s_ina_present = true;
+            Serial.print("Sensors: INA3221 found at 0x");
+            Serial.print(addr, HEX);
+            Serial.println();
+            break;
+        }
+    }
+    if (!s_ina_present) {
         Serial.println("Sensors: no INA3221 detected on I2C");
     }
 
@@ -110,22 +144,52 @@ bool read_bme(float& temp_c, float& humidity_pct, float& pressure_mbar) {
 #endif
 }
 
-bool read_ina(float& bus_voltage_v, float& current_ma) {
+bool read_ina(float& ch1_v, float& ch1_ma,
+              float& ch2_v, float& ch2_ma,
+              float& ch3_v, float& ch3_ma) {
 #if !(defined(HAS_I2C_HEADER) && HAS_I2C_HEADER)
-    (void)bus_voltage_v; (void)current_ma;
+    (void)ch1_v; (void)ch1_ma;
+    (void)ch2_v; (void)ch2_ma;
+    (void)ch3_v; (void)ch3_ma;
     return false;
 #else
     if (!s_ina_present) return false;
-    // Channel 1 (chip-indexed; Adafruit's wrapper is 1-based and
-    // matches the INA3221 datasheet's CH1/CH2/CH3 silkscreen on
-    // most WisBlock sensor boards). Easy to bump later if a user
-    // asks for per-channel telemetry; keep it as one rail for v1.
-    // Adafruit_INA3221 v1.0.1 reports current in amps via
-    // getCurrentAmps(); convert to mA here so downstream code
-    // matches the rest of the project's mA-grain readings.
-    bus_voltage_v = s_ina.getBusVoltage(1);            // V, relative to GND
-    current_ma    = s_ina.getCurrentAmps(1) * 1000.0f; // A -> mA, signed
+    // IMPORTANT: Adafruit_INA3221's getBusVoltage()/getCurrentAmps() take
+    // a 0-BASED channel index (0/1/2 -> physical CH1/CH2/CH3 registers;
+    // the library explicitly returns NaN for channel >= 3). A previous
+    // version of this code passed 1/2/3, which silently read CH2/CH3/
+    // (invalid->NaN) instead of CH1/CH2/CH3 — confirmed via hardware
+    // testing (ch3 read back as NaN, exactly matching the library's
+    // invalid-channel guard). Current is reported in amps; convert to
+    // mA so downstream code matches the rest of the project's mA-grain
+    // readings.
+    ch1_v  = s_ina.getBusVoltage(0);            // V, relative to GND (physical CH1)
+    ch1_ma = s_ina.getCurrentAmps(0) * 1000.0f; // A -> mA, signed
+    ch2_v  = s_ina.getBusVoltage(1);            // physical CH2
+    ch2_ma = s_ina.getCurrentAmps(1) * 1000.0f;
+    ch3_v  = s_ina.getBusVoltage(2);            // physical CH3
+    ch3_ma = s_ina.getCurrentAmps(2) * 1000.0f;
     return true;
+#endif
+}
+
+void scan_bus(Print& out) {
+#if !(defined(HAS_I2C_HEADER) && HAS_I2C_HEADER)
+    (void)out;
+    return;
+#else
+    int found = 0;
+    for (uint8_t addr = 0x03; addr <= 0x77; addr++) {
+        Wire.beginTransmission(addr);
+        uint8_t err = Wire.endTransmission();
+        if (err == 0) {
+            found++;
+            out.print("0x");
+            if (addr < 0x10) out.print('0');
+            out.println(addr, HEX);
+        }
+    }
+    if (found == 0) out.println("(no devices found)");
 #endif
 }
 

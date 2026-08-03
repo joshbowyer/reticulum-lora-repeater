@@ -182,7 +182,7 @@ class RLRConsole {
     return ['display_name','freq_hz','bw_hz','sf','cr','txp_dbm','batt_mult',
             'tele_interval_ms','lxmf_interval_ms','telemetry','lxmf','heartbeat',
             'bt_enabled','bt_pin','latitude','longitude','altitude','log_level','collector',
-            'tx_enabled'];
+            'tx_enabled','ina_ch1_label','ina_ch2_label','ina_ch3_label'];
   }
 
   parsePipe(line) {

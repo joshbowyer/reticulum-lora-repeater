@@ -143,7 +143,7 @@ static void _on_config_write(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t*
         "batt_mult", "tele_interval_ms", "lxmf_interval_ms",
         "telemetry", "lxmf", "heartbeat", "bt_enabled", "bt_pin",
         "latitude", "longitude", "altitude", "log_level", "collector",
-        "tx_enabled"
+        "tx_enabled", "ina_ch1_label", "ina_ch2_label", "ina_ch3_label"
     };
     static constexpr size_t NUM_KEYS = sizeof(keys) / sizeof(keys[0]);
 

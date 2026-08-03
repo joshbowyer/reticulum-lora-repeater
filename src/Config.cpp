@@ -39,8 +39,11 @@ static constexpr size_t CONFIG_V1_SIZE = 64;
 //   v2 = 76 (fields) + 4 (crc32) = 80 bytes
 //   v3 = 76 (fields) + 16 (collector_hash) + 4 (crc32) = 96 bytes
 static constexpr size_t CONFIG_V2_SIZE = 80;
+// Size of the v3 Config struct on disk (before the INA channel label fields).
+// v3 = 76 (shared prefix) + 16 (collector_hash) + 4 (crc32) = 96 bytes.
+static constexpr size_t CONFIG_V3_SIZE = 96;
 // Byte offset where the shared field prefix ends (start of collector_hash
-// in v3 / crc32 in v2). Used by the v2->v3 migration below.
+// in v3 / crc32 in v2). Used by the v2 migration below.
 static constexpr size_t CONFIG_SHARED_PREFIX = 76;
 
 // --- CRC-32 helper (zlib polynomial 0xEDB88320, reflected) -------
@@ -68,7 +71,7 @@ static uint32_t crc32_of(const uint8_t* data, size_t len) {
 
 void defaults(Config& out) {
     memset(&out, 0, sizeof(out));
-    out.version          = 3;
+    out.version          = 4;
     out.log_level        = 1;  // normal
     out.freq_hz          = DEFAULT_CONFIG_FREQ_HZ;
     out.bw_hz            = DEFAULT_CONFIG_BW_HZ;
@@ -102,7 +105,7 @@ void defaults(Config& out) {
 // --- validate ----------------------------------------------------
 
 bool validate(const Config& cfg) {
-    if (cfg.version != 1 && cfg.version != 2 && cfg.version != 3) return false;
+    if (cfg.version != 1 && cfg.version != 2 && cfg.version != 3 && cfg.version != 4) return false;
     if (cfg.sf < 7   || cfg.sf > 12)                    return false;
     if (cfg.cr < 5   || cfg.cr > 8)                     return false;
     if (cfg.txp_dbm < -9 || cfg.txp_dbm > 22)           return false;
@@ -121,6 +124,16 @@ bool validate(const Config& cfg) {
         if (cfg.display_name[i] == '\0') { terminated = true; break; }
     }
     if (!terminated)                                    return false;
+    // INA channel labels must each be NUL-terminated within their buffers.
+    const char* labels[] = { cfg.ina_ch1_label, cfg.ina_ch2_label, cfg.ina_ch3_label };
+    const size_t label_sizes[] = { sizeof(cfg.ina_ch1_label), sizeof(cfg.ina_ch2_label), sizeof(cfg.ina_ch3_label) };
+    for (size_t label = 0; label < 3; label++) {
+        bool label_terminated = false;
+        for (size_t i = 0; i < label_sizes[label]; i++) {
+            if (labels[label][i] == '\0') { label_terminated = true; break; }
+        }
+        if (!label_terminated) return false;
+    }
     return true;
 }
 
@@ -141,10 +154,12 @@ bool load(Config& out) {
 
         // Determine the on-disk schema by file size.
         //   v1 = CONFIG_V1_SIZE (64), v2 = CONFIG_V2_SIZE (80),
-        //   v3 = sizeof(Config). Older records are migrated forward.
+        //   v3 = CONFIG_V3_SIZE (96), v4 = sizeof(Config). Older records
+        // are migrated forward.
         bool is_v1 = (n == CONFIG_V1_SIZE);
         bool is_v2 = (n == CONFIG_V2_SIZE);
-        if (n != sizeof(Config) && !is_v1 && !is_v2) {
+        bool is_v3 = (n == CONFIG_V3_SIZE);
+        if (n != sizeof(Config) && !is_v1 && !is_v2 && !is_v3) {
             Serial.print("Config: /config.bin size mismatch (");
             Serial.print(n);
             Serial.print(" bytes, expected ");
@@ -200,36 +215,38 @@ bool load(Config& out) {
                 return false;
             }
 
-            // Migrate straight to v3: zero the v2 (bt/location) and v3
-            // (collector) additions, bump version. tmp was memset(0) above
-            // so collector_hash and the bt/location fields are already 0.
+            // Migrate straight to v4: zero the v2 (bt/location) and v3
+            // (collector) and v4 (INA label) additions, bump version. tmp
+            // was memset(0) above so collector_hash, labels, and the
+            // bt/location fields are already 0.
             tmp.bt_pin         = 0;
             tmp.latitude_udeg  = 0;
             tmp.longitude_udeg = 0;
             tmp.altitude_m     = 0;
             tmp.flags         &= ~CONFIG_FLAG_BT_ENABLED;  // BT off by default
-            tmp.version        = 3;
+            tmp.version        = 4;
 
-            // Re-compute CRC for the v3 layout and persist so future
+            // Re-compute CRC for the v4 layout and persist so future
             // boots take the fast path.
             tmp.crc32 = 0;
-            const size_t v3_crc_covered = sizeof(Config) - sizeof(uint32_t);
-            tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), v3_crc_covered);
+            const size_t v4_crc_covered = sizeof(Config) - sizeof(uint32_t);
+            tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), v4_crc_covered);
 
             RNS::Bytes migrated(reinterpret_cast<const uint8_t*>(&tmp), sizeof(Config));
             RNS::Utilities::OS::write_file(CONFIG_PATH, migrated);
-            Serial.println("Config: migrated v1 -> v3");
+            Serial.println("Config: migrated v1 -> v4");
 
             out = tmp;
             return true;
         }
 
         if (is_v2) {
-            // v2 -> v3 migration. v2 shares the first CONFIG_SHARED_PREFIX
-            // (76) bytes with v3, then has crc32; v3 inserts
-            // collector_hash[16] before crc32. Verify the v2 CRC (covers
-            // the 76-byte prefix), copy that prefix into the v3 struct,
-            // leave collector_hash zeroed, re-stamp a v3 CRC, persist.
+            // v2 -> v4 migration. v2 shares the first CONFIG_SHARED_PREFIX
+            // (76) bytes with v3/v4, then has crc32; v4 inserts
+            // collector_hash[16] and the three INA labels before crc32.
+            // Verify the v2 CRC (covers the 76-byte prefix), copy that
+            // prefix into the v4 struct, leave additions zeroed, re-stamp
+            // a v4 CRC, persist.
             const uint8_t* p = data.data();
 
             uint32_t want;
@@ -245,8 +262,8 @@ bool load(Config& out) {
             }
 
             memcpy(&tmp, p, CONFIG_SHARED_PREFIX);   // version..display_name
-            // collector_hash already zeroed by the memset above.
-            tmp.version = 3;
+            // collector_hash and INA labels already zeroed by the memset above.
+            tmp.version = 4;
 
             if (!validate(tmp)) {
                 Serial.println("Config: v2 CRC OK but field validation failed");
@@ -254,18 +271,58 @@ bool load(Config& out) {
             }
 
             tmp.crc32 = 0;
-            const size_t v3_crc_covered = sizeof(Config) - sizeof(uint32_t);
-            tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), v3_crc_covered);
+            const size_t v4_crc_covered = sizeof(Config) - sizeof(uint32_t);
+            tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), v4_crc_covered);
 
             RNS::Bytes migrated(reinterpret_cast<const uint8_t*>(&tmp), sizeof(Config));
             RNS::Utilities::OS::write_file(CONFIG_PATH, migrated);
-            Serial.println("Config: migrated v2 -> v3");
+            Serial.println("Config: migrated v2 -> v4");
 
             out = tmp;
             return true;
         }
 
-        // Normal v3 load path
+        if (is_v3) {
+            // v3 -> v4 migration. v3 contains the shared 76-byte prefix
+            // and collector_hash[16], followed by crc32. Verify the v3 CRC
+            // (the first 92 bytes), copy those bytes into the v4 struct,
+            // leave the new INA labels zeroed, re-stamp a v4 CRC, persist.
+            const uint8_t* p = data.data();
+
+            const size_t v3_crc_covered = CONFIG_V3_SIZE - sizeof(uint32_t);
+            uint32_t want;
+            memcpy(&want, p + v3_crc_covered, sizeof(uint32_t));
+            uint32_t actual = crc32_of(p, v3_crc_covered);
+            if (actual != want) {
+                Serial.print("Config: v3 CRC mismatch (got 0x");
+                Serial.print(actual, HEX);
+                Serial.print(", want 0x");
+                Serial.print(want, HEX);
+                Serial.println(")");
+                return false;
+            }
+
+            memcpy(&tmp, p, v3_crc_covered);  // version..collector_hash
+            tmp.version = 4;
+
+            if (!validate(tmp)) {
+                Serial.println("Config: v3 CRC OK but field validation failed");
+                return false;
+            }
+
+            tmp.crc32 = 0;
+            const size_t v4_crc_covered = sizeof(Config) - sizeof(uint32_t);
+            tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), v4_crc_covered);
+
+            RNS::Bytes migrated(reinterpret_cast<const uint8_t*>(&tmp), sizeof(Config));
+            RNS::Utilities::OS::write_file(CONFIG_PATH, migrated);
+            Serial.println("Config: migrated v3 -> v4");
+
+            out = tmp;
+            return true;
+        }
+
+        // Normal v4 load path
         memcpy(&tmp, data.data(), sizeof(Config));
 
         // CRC32 covers every byte before the crc32 field itself.
@@ -313,7 +370,7 @@ bool save(const Config& in) {
         }
 
         Config tmp = in;
-        tmp.version = 3;
+        tmp.version = 4;
         tmp.crc32   = 0;
         const size_t crc_covered = sizeof(Config) - sizeof(uint32_t);
         tmp.crc32 = crc32_of(reinterpret_cast<const uint8_t*>(&tmp), crc_covered);
@@ -401,6 +458,19 @@ const char* set_field(Config& cfg, const char* key, const char* value) {
         }
         memset(cfg.display_name, 0, sizeof(cfg.display_name));
         memcpy(cfg.display_name, value, n);
+        return nullptr;
+    }
+    if (streq(key, "ina_ch1_label") || streq(key, "ina_ch2_label") || streq(key, "ina_ch3_label")) {
+        char* label = streq(key, "ina_ch1_label") ? cfg.ina_ch1_label
+                   : streq(key, "ina_ch2_label") ? cfg.ina_ch2_label
+                                                   : cfg.ina_ch3_label;
+        size_t n = strlen(value);
+        if (n >= sizeof(cfg.ina_ch1_label)) return "INA channel label max 7 chars";
+        for (size_t i = 0; i < n; i++) {
+            if (value[i] == '|') return "INA channel label must not contain '|'";
+        }
+        memset(label, 0, sizeof(cfg.ina_ch1_label));
+        memcpy(label, value, n);
         return nullptr;
     }
     if (streq(key, "freq_hz")) {
@@ -586,6 +656,9 @@ void print_fields(const Config& cfg, Print& out) {
     out.print("altitude=");         out.println(cfg.altitude_m);
     out.print("log_level=");       out.println(cfg.log_level);
     out.print("collector=");        print_collector_hex(cfg, out); out.println();
+    out.print("ina_ch1_label=");     out.println(cfg.ina_ch1_label);
+    out.print("ina_ch2_label=");     out.println(cfg.ina_ch2_label);
+    out.print("ina_ch3_label=");     out.println(cfg.ina_ch3_label);
 }
 
 void print_fields_pipe(const Config& cfg, Print& out) {
@@ -596,7 +669,7 @@ void print_fields_pipe(const Config& cfg, Print& out) {
     // Field order: display_name|freq_hz|bw_hz|sf|cr|txp_dbm|batt_mult|
     //   tele_interval_ms|lxmf_interval_ms|telemetry|lxmf|heartbeat|
     //   bt_enabled|bt_pin|latitude|longitude|altitude|log_level|collector|
-    //   tx_enabled
+    //   tx_enabled|ina_ch1_label|ina_ch2_label|ina_ch3_label
     // Must stay in lockstep with Ble.cpp keys[] and console.js PIPE_FIELDS.
     // New fields are appended at the END to minimise version skew.
     out.print(cfg.display_name);       out.print('|');
@@ -618,7 +691,10 @@ void print_fields_pipe(const Config& cfg, Print& out) {
     out.print(cfg.altitude_m);         out.print('|');
     out.print(cfg.log_level);          out.print('|');
     print_collector_hex(cfg, out);     out.print('|');
-    out.print(tx_enabled(cfg) ? 1 : 0);
+    out.print(tx_enabled(cfg) ? 1 : 0);     out.print('|');
+    out.print(cfg.ina_ch1_label);           out.print('|');
+    out.print(cfg.ina_ch2_label);           out.print('|');
+    out.print(cfg.ina_ch3_label);
     // No println — caller may append more fields before the line ends.
 }
 

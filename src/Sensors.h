@@ -1,4 +1,5 @@
 #pragma once
+#include <Print.h>
 // =====================================================================
 //  src/Sensors.h — optional I2C sensor telemetry (BME280 + INA3221).
 //
@@ -55,12 +56,19 @@ bool ina_present();
 // is present.
 bool read_bme(float& temp_c, float& humidity_pct, float& pressure_mbar);
 
-// Read INA3221 channel-1 bus voltage and current draw. On success
-// populates bus_voltage_v (volts) and current_ma (milliamps; sign
-// indicates direction relative to the chip's GND shunt) and returns
-// true. Channel 1 is selected as the "default" monitored rail — most
-// off-the-shelf WisBlock INA3221 boards label it as the system rail.
-// Returns false (out args untouched) if no INA3221 is present.
-bool read_ina(float& bus_voltage_v, float& current_ma);
+// Read all 3 INA3221 channels: bus voltage (V) and current (mA, signed).
+// Channel semantics (which one is solar/battery/etc.) are wiring-defined
+// by the operator; see Config.ina_ch*_label.
+// Returns false (all out args untouched) if no INA3221 is present.
+bool read_ina(float& ch1_v, float& ch1_ma,
+              float& ch2_v, float& ch2_ma,
+              float& ch3_v, float& ch3_ma);
+
+// Diagnostic: scan the I2C bus (addresses 0x03-0x77) and print every
+// address that ACKs to `out`, one per line as "0x<hex>". Prints
+// "(no devices found)" if nothing responds. No-ops (prints nothing,
+// returns immediately) when HAS_I2C_HEADER is unset. Safe to call at
+// any time after init() — does not disturb sensor presence state.
+void scan_bus(Print& out);
 
 }} // namespace rlr::sensors

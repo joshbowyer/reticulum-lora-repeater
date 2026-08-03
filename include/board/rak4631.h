@@ -52,7 +52,7 @@
 #define HAS_DISPLAY             0
 #define HAS_BLE                 1
 #define HAS_PMU                 0
-#define HAS_I2C_HEADER          1      // WisBlock IO header exposes I2C; Sensors.cpp auto-probes for BME280 + INA3221 at boot
+#define HAS_I2C_HEADER          1      // WisBlock IO header exposes I2C; enable PIN_WB_IO2 before Sensors.cpp probes BME280 + INA3221 at boot
 
 // ---- MCU / SRAM budget --------------------------------------------
 #define BOARD_MCU               "nRF52840"
@@ -96,6 +96,17 @@
 #define PIN_VEXT_EN             37    // P1.05  ACTIVE HIGH — gates SX1262 3V3
 #define VEXT_SETTLE_MS          10
 
+// WisBlock IO slot power enable ("3V3_S" switched rail, WB_IO2 in RAK's
+// own docs / Meshtastic's variant.h). Powers sensor modules (BME280,
+// INA3221) plugged into the WisBlock IO slot. DIFFERENT from
+// PIN_VEXT_EN above, which only powers the SX1262 radio — do not
+// conflate the two. Active-high; ~10ms settle delay recommended before
+// I2C access. Source: meshtastic/firmware variants/nrf52840/rak4631/variant.h
+// (PIN_3V3_EN / WB_IO2) and RAKWireless/RAK-nRF52-Arduino
+// WisCore_RAK4631_Board/variant.h (WB_IO2 = 34).
+#define PIN_WB_IO2              34    // P1.02 — WisBlock IO slot 3V3_S enable
+#define WB_IO2_SETTLE_MS        10
+
 // Battery sense. CORRECTED per Meshtastic's confirmed-working RAK4631
 // variant (variants/nrf52840/rak4631/variant.h): BATTERY_PIN = PIN_A0,
 // which their own comment maps to "RAK4630 AIN0 = nRF52840 AIN3 = Pin
@@ -124,14 +135,20 @@
 #define PIN_LED                 35
 #define LED_ACTIVE_HIGH         1
 
-// I2C — the WisBlock IO header exposes I2C on P0.26 (SDA) and P0.27
-// (SCL), which are the same GPIOs the Adafruit nRF52 BSP variant for
-// nrf52840_dk_adafruit selects as the default Wire pins. Sensors.cpp
-// calls Wire.begin() with no arguments, so it picks up these board
-// defaults automatically and we don't have to redeclare PIN_SDA /
-// PIN_SCL — matching how the rest of the codebase doesn't pin every
-// internal BSP default. If a specific WisBlock base / sensor module
+// I2C — RAK4631 WisBlock I2C1 (the RAK19003/19007 base SDA/SCL and
+// sensor slots) is on P0.13 (SDA) / P0.14 (SCL), per RAK's own
+// WisCore_RAK4631_Board variant.h and Meshtastic's rak4631 variant
+// (WB_I2C1_SDA=13 / WB_I2C1_SCL=14). CORRECTED from a previous
+// (wrong) assumption that the generic pca10056 BSP's default Wire
+// pins (P0.26/P0.27) happened to match the RAK4631's I2C traces —
+// confirmed via hardware testing that they do NOT: Wire.begin() with
+// no args silently enables pull-ups on 26/27 and every I2C address
+// NAKs, since nothing is actually wired there. Sensors.cpp must call
+// Wire.setPins(PIN_I2C_SDA, PIN_I2C_SCL) before Wire.begin() to
+// override the BSP default. If a specific WisBlock base / sensor module
 // uses different traces, override here.
+#define PIN_I2C_SDA             13    // P0.13 — WB_I2C1_SDA
+#define PIN_I2C_SCL             14    // P0.14 — WB_I2C1_SCL
 
 // ---- Default config values for first boot -------------------------
 // US ISM band with conservative TX power — the webflasher's CONFIG
