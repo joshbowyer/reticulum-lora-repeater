@@ -50,15 +50,23 @@ Import("env")  # noqa: F821  (PlatformIO injects this)
 #  Job 0 — stamp firmware version from git
 # ---------------------------------------------------------------
 #
-#  Derive RLR_VERSION from `git describe --tags --always` so the
-#  boot banner and VERSION serial command report the actual build
+#  Derive RLR_VERSION from `git describe --tags --always --dirty` so
+#  the boot banner and VERSION serial command report the actual build
 #  version (e.g. "v0.1.4" on a clean tag, "v0.1.4-3-gabcdef0" on
 #  a commit past the tag). Falls back to "dev" if git isn't
 #  available or the repo has no tags.
+#
+#  --dirty is critical: without it, a build from a working tree with
+#  uncommitted changes reports the IDENTICAL version string as a clean
+#  build of the same commit, giving false confidence that a flashed
+#  device is running known-good, reviewed code. (Root-caused a real
+#  multi-hour debugging session where a device was silently running an
+#  uncommitted, incorrect radio change that looked like a clean,
+#  previously-verified commit via VERSION/STATUS.)
 
 try:
     git_version = subprocess.check_output(
-        ["git", "describe", "--tags", "--always"],
+        ["git", "describe", "--tags", "--always", "--dirty"],
         stderr=subprocess.DEVNULL,
     ).decode("utf-8").strip()
 except Exception:
