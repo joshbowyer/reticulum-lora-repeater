@@ -193,6 +193,19 @@ CONFIG COMMIT              - persist staging + reboot
 CALIBRATE BATTERY <mv>     - derive batt_mult from measured voltage
 ```
 
+### Tools
+
+`tools/set-collector.py` — repoint an RLR unit's telemetry collector over
+serial without hand-typing the raw `CONFIG SET`/`CONFIG COMMIT` commands.
+Validates the hash before touching the device, and can also check the
+current value or clear it:
+
+```bash
+python3 tools/set-collector.py /dev/ttyACM0 <32-hex-char-collector-hash>
+python3 tools/set-collector.py /dev/ttyACM0 --show
+python3 tools/set-collector.py /dev/ttyACM0 --clear
+```
+
 ## From source (developer workflow)
 
 ```bash
