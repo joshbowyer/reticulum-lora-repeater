@@ -616,6 +616,56 @@ show_value() {
 }
 
 
+# === subcommand: show =============================================
+#
+# Read-only: fetch CONFIG GET and print it neatly, using the same
+# human-readable labels as the interactive configure walkthrough.
+# No prompts, no writes to the device.
+
+cmd_show() {
+    local dev=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown show flag: $1 (use --help)" ;;
+        esac
+    done
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for show") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+
+    log "fetching current config from $dev ..."
+    local payload
+    if ! payload=$("$PYTHON_BIN" "$SERIAL_HELPER" config-get "$dev"); then
+        die "CONFIG GET failed — could not read current values from the device."
+    fi
+
+    declare -A CONFIG_GET_VALUES=()
+    parse_config_get "$payload"
+
+    echo
+    echo "Current config ($dev):"
+    echo
+    local flag spec key type prompt raw display
+    for flag in "${PROMPT_ORDER[@]}"; do
+        spec="${FIELDS[$flag]}"
+        key="${spec%%|*}"
+        local rest="${spec#*|}"
+        type="${rest%%|*}"
+        prompt="${rest#*|}"
+        raw="${CONFIG_GET_VALUES[$key]:-}"
+        display="$(show_value "$raw")"
+        printf '  %-18s %-40s %s\n' "$key" "$display" "($prompt)"
+    done
+    echo
+}
+
+
 # === subcommand: wipe =============================================
 #
 # Resets ALL config fields to firmware factory defaults (CONFIG RESET)
@@ -702,6 +752,7 @@ a terminal. Works on Linux only (uses /dev/ttyACM* / /dev/ttyUSB*).
 Usage:
   rlr.sh flash --dev <port> --firmware <path> [--board <env>]
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
+  rlr.sh show [--dev <port>]
   rlr.sh wipe [--dev <port>] [--yes]
   rlr.sh --help | -h | help
 
@@ -750,6 +801,14 @@ Subcommands:
     --dev is optional if exactly one /dev/ttyACM* or /dev/ttyUSB*
     port exists on the system at invocation. With zero or multiple
     ports, the script lists them and prompts to choose.
+
+  show
+    Read-only: print the device's current config, one field per
+    line with a human-readable label, no prompts, no writes.
+
+    Optional:
+      --dev <port>  Serial port. Auto-detected if omitted and
+                    exactly one candidate exists.
 
   wipe
     Reset ALL config on the device to firmware factory defaults
@@ -803,6 +862,9 @@ Examples:
       --name "Roof Site North" \
       --collector 0123456789abcdef0123456789abcdef
 
+  # Print a node's current config, neatly, read-only
+  rlr.sh show --dev /dev/ttyACM0
+
   # Reset a node back to factory defaults (destructive, asks to confirm)
   rlr.sh wipe --dev /dev/ttyACM0
 
@@ -832,6 +894,7 @@ shift
 case "$SUBCMD" in
     flash)      cmd_flash "$@" ;;
     configure)  cmd_configure "$@" ;;
+    show)       cmd_show "$@" ;;
     wipe)       cmd_wipe "$@" ;;
     --help|-h|help) usage; exit 0 ;;
     *)
