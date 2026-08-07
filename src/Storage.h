@@ -21,4 +21,14 @@ namespace rlr { namespace storage {
 // Identity persistence. Returns true on success.
 bool init();
 
+// Delete the persisted Reticulum transport identity file, forcing a
+// fresh Identity() to be generated on next boot. Needed to recover a
+// device that generated its identity BEFORE the RNG entropy fix in
+// main.cpp (see setup()'s comment) - such a device may share its LXMF
+// address with another device flashed from the same build, and
+// CONFIG RESET does not touch this file (it only resets /config.bin).
+// Returns true if the file existed and was removed, false if it
+// didn't exist (not an error - nothing to reset) or removal failed.
+bool remove_identity();
+
 }} // namespace rlr::storage

@@ -10,6 +10,7 @@
 // =====================================================================
 
 #include <Arduino.h>
+#include <RNG.h>
 #include "Config.h"
 #include "Storage.h"
 #include "Led.h"
@@ -75,6 +76,29 @@ void setup() {
     Serial.print(RADIO_MODULE);
     Serial.println(")");
     Serial.println("=====================================================");
+
+    // Seed the RNG with real per-device entropy BEFORE anything else
+    // touches it. This matters a lot: microReticulum's own Reticulum.cpp
+    // calls RNG.begin("Reticulum") internally when the transport starts,
+    // but RNGClass::begin() is a no-op if already initialized — so
+    // whoever seeds it FIRST wins. Left to its own devices, the Crypto
+    // library's RNG.cpp has no nRF52-specific TRNG/unique-ID branch (only
+    // AVR/ESP8266/ESP32/SAM-DUE are handled) and falls through to stirring
+    // in __TIME__ __DATE__ — the FIRMWARE'S OWN COMPILE TIMESTAMP, which
+    // is IDENTICAL across every device flashed from the same build. With
+    // no other entropy source, this meant every device flashed from one
+    // firmware.zip generated the exact same "random" Identity keypair on
+    // first boot — i.e. the same LXMF address. Confirmed live: two RAK4631
+    // units flashed from the same build both ended up on one grid slot in
+    // the telemetry collector, correctly configured otherwise. Fix: stir
+    // in the nRF52840's factory-programmed 64-bit DEVICEID (FICR) — this
+    // is genuinely unique per chip, unlike anything derived from the
+    // firmware binary itself.
+    RNG.begin("rlr");
+    {
+        uint32_t ficr_id[2] = { NRF_FICR->DEVICEID[0], NRF_FICR->DEVICEID[1] };
+        RNG.stir((const uint8_t*)ficr_id, sizeof(ficr_id), 128);
+    }
 
     rlr::led::init();
 

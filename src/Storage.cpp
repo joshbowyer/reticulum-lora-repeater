@@ -49,4 +49,16 @@ bool init() {
     return true;
 }
 
+bool remove_identity() {
+    // Path matches microReticulum's own Transport.cpp construction:
+    // "%s/transport_identity" with Reticulum::_storagepath, which this
+    // firmware never sets (stays at its zero-initialized default of
+    // "" ), so this resolves to "/transport_identity".
+    static const char* kIdentityPath = "/transport_identity";
+    if (!s_filesystem.exists(kIdentityPath)) {
+        return false;
+    }
+    return s_filesystem.remove(kIdentityPath);
+}
+
 }} // namespace rlr::storage

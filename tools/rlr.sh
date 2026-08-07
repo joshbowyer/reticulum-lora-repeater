@@ -783,6 +783,54 @@ cmd_announce() {
     echo "(e.g. restart the collector daemon) so this node can hear it back."
 }
 
+cmd_refresh() {
+    local dev="" confirm_flag=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --yes)      confirm_flag="yes"; shift ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown refresh flag: $1 (use --help)" ;;
+        esac
+    done
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for refresh") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+
+    echo
+    echo "This regenerates the device's LXMF identity — its address WILL"
+    echo "change permanently. Any collector/peer that has the OLD address"
+    echo "on file will need to be told the new one. This does NOT touch"
+    echo "config fields (frequency, collector, tx_enabled, etc.) — only"
+    echo "the identity/address."
+    echo
+    if [ "$confirm_flag" != "yes" ]; then
+        local confirm
+        read -r -p "Type REFRESH to confirm: " confirm
+        [ "$confirm" = "REFRESH" ] || { echo "Aborted, nothing changed"; exit 0; }
+    fi
+
+    log "sending IDENTITY RESET to $dev ..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" identity-reset "$dev"; then
+        die "IDENTITY RESET failed (see output above)."
+    fi
+
+    log "waiting 3s for the device to reboot..."
+    sleep 3
+    echo
+    echo "New address (after reboot):"
+    echo
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" status "$dev" 2>/dev/null | grep '^address='; then
+        warn "could not read back the new address yet — device may still be rebooting. Re-run '$0 show --dev $dev' in a few seconds."
+    fi
+    echo
+    echo "Send ANNOUNCE now (and restart your collector if telemetry doesn't show up — see '$0 announce --help')."
+}
+
 cmd_show() {
     local dev=""
     while [ $# -gt 0 ]; do
@@ -809,9 +857,24 @@ cmd_show() {
     declare -A CONFIG_GET_VALUES=()
     parse_config_get "$payload"
 
+    # The node's LXMF address (from STATUS, not CONFIG GET — it's
+    # derived from the identity, not a config field). Best-effort: if
+    # this fails for any reason, still show the rest of the config
+    # rather than aborting.
+    local status_payload address_line
+    status_payload=$("$PYTHON_BIN" "$SERIAL_HELPER" status "$dev" 2>/dev/null) || true
+    address_line=$(printf '%s\n' "$status_payload" | grep '^address=' | cut -d= -f2)
+
     echo
     echo "Current config ($dev):"
     echo
+    if [ -n "$address_line" ]; then
+        printf '  %-18s %s\n' "address" "$address_line"
+        echo "  (this is what shows up on a telemetry collector's page — compare"
+        echo "   across your nodes if you suspect two share the same address; see"
+        echo "   '$0 refresh --help' to fix it)"
+        echo
+    fi
     local flag spec key type prompt raw display
     for flag in "${PROMPT_ORDER[@]}"; do
         spec="${FIELDS[$flag]}"
@@ -1130,6 +1193,7 @@ Usage:
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
    rlr.sh show [--dev <port>]
    rlr.sh announce [--dev <port>]
+   rlr.sh refresh [--dev <port>] [--yes]
    rlr.sh export [--dev <port>] [--file <path>]
   rlr.sh import [--dev <port>] [--file <path>]
   rlr.sh wipe [--dev <port>] [--yes]
@@ -1216,6 +1280,29 @@ Subcommands:
     Optional:
       --dev <port>  Serial port. Auto-detected if omitted and
                     exactly one candidate exists.
+
+  refresh
+    Send IDENTITY RESET — regenerates the device's LXMF identity
+    (its address) and reboots. Destructive: the OLD address is gone
+    for good. Does NOT touch config fields (frequency, collector,
+    tx_enabled, etc.) - only the identity.
+
+    Fixes a real firmware bug (fixed going forward, but pre-existing
+    devices may still be affected): before the RNG entropy fix, two
+    devices flashed from the same build with no other differing
+    entropy could generate the SAME address. Symptom: `show` looks
+    correct and consistent across devices, but only one grid slot
+    ever updates on your telemetry collector no matter which physical
+    device announces. Compare `show`'s new `address=` field across
+    your nodes to check for this - if two match, run `refresh` on one
+    of them.
+
+    Requires typing REFRESH to confirm unless --yes is passed.
+
+    Optional:
+      --dev <port>  Serial port. Auto-detected if omitted and
+                    exactly one candidate exists.
+      --yes         Skip the confirmation prompt.
 
   export
     Read-only: fetch the device's current config and write it as
@@ -1340,6 +1427,7 @@ case "$SUBCMD" in
     configure)  cmd_configure "$@" ;;
     show)       cmd_show "$@" ;;
     announce)   cmd_announce "$@" ;;
+    refresh)    cmd_refresh "$@" ;;
     export)     cmd_export "$@" ;;
     import)     cmd_import "$@" ;;
     wipe)       cmd_wipe "$@" ;;

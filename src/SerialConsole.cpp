@@ -18,6 +18,7 @@
 // belongs in the webflasher UI on the host side.
 
 #include "SerialConsole.h"
+#include "Storage.h"
 #include "Transport.h"
 #include "Radio.h"
 #include "Telemetry.h"
@@ -28,6 +29,8 @@
 
 #include <Arduino.h>
 #include <nrf_soc.h>
+#include <microReticulum/Transport.h>
+#include <microReticulum/Destination.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -85,6 +88,7 @@ static void cmd_help(Print& out) {
     out.println("  HELP                       - this help");
     out.println("  REBOOT                     - NVIC system reset");
     out.println("  DFU                        - reboot into DFU bootloader");
+    out.println("  IDENTITY RESET             - regenerate LXMF address, reboot (destructive)");
     out.println("  CONFIG GET                 - print staged config");
     out.println("  CONFIG SET <key> <value>   - stage a field change");
     out.println("  CONFIG RESET               - reseed staging from defaults");
@@ -111,6 +115,18 @@ static void cmd_status(Print& out) {
     out.print("packets_out="); out.println(rlr::transport::packets_out());
     out.print("paths=");       out.println(rlr::transport::path_count());
     out.print("destinations="); out.println(rlr::transport::destination_count());
+    // The node's own lxmf.delivery destination hash — this IS the
+    // "address" that shows up on a telemetry collector's page and that
+    // other nodes/apps (Sideband, NomadNet, MeshChat) see it as. Exposing
+    // this was a real gap: two devices with otherwise-identical config
+    // (same collector, same everything) can silently share the SAME
+    // address if their Identity was generated with weak/colliding
+    // entropy (see main.cpp's RNG seeding fix) - there was previously no
+    // way to see this from the serial console to even notice.
+    {
+        RNS::Bytes self_hash = RNS::Destination::hash(RNS::Transport::identity(), "lxmf", "delivery");
+        out.print("address="); out.println(self_hash.toHex().c_str());
+    }
     if (s_live) {
         out.print("display_name="); out.println(s_live->display_name);
         // Raw + scaled battery readings so the webflasher (or a human)
@@ -180,6 +196,27 @@ static void cmd_calibrate_battery(Print& out, char* rest) {
 
 static void cmd_reboot(Print& out) {
     out.println("rebooting...");
+    ok(out);
+    out.flush();
+    delay(50);
+    NVIC_SystemReset();
+}
+
+static void cmd_identity_reset(Print& out) {
+    // Deletes the persisted transport identity file and reboots, forcing
+    // a fresh Identity() (and therefore a new lxmf.delivery address) to
+    // be generated on next boot. Recovery path for a device that
+    // generated its identity before the RNG entropy fix (see main.cpp)
+    // and may be sharing an address with another device flashed from
+    // the same build - CONFIG RESET does NOT touch this, since it only
+    // resets /config.bin. Destructive: the OLD address is gone for
+    // good, any peer that had it in a contact list will need the new
+    // one.
+    if (rlr::storage::remove_identity()) {
+        out.println("identity file removed — rebooting to generate a fresh one...");
+    } else {
+        out.println("no identity file found (nothing to reset) — rebooting anyway...");
+    }
     ok(out);
     out.flush();
     delay(50);
@@ -289,6 +326,7 @@ static void dispatch(char* line, Print& out) {
     if (strcmp(upper_copy, "HELP") == 0)    { cmd_help(out);    return; }
     if (strcmp(upper_copy, "REBOOT") == 0)  { cmd_reboot(out);  return; }
     if (strcmp(upper_copy, "DFU") == 0)     { cmd_dfu(out);     return; }
+    if (strcmp(upper_copy, "IDENTITY RESET") == 0) { cmd_identity_reset(out); return; }
 
     // CONFIG subcommands. Match the uppercase prefix, then operate on
     // the original (case-preserving) buffer for any trailing args.
