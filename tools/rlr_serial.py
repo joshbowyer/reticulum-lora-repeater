@@ -229,6 +229,10 @@ def main():
         if len(args) != 1:
             print("usage: rlr_serial.py touch <port>", file=sys.stderr); sys.exit(1)
         sys.exit(cmd_touch(args[0]))
+    if sub == "announce":
+        if len(args) != 1:
+            print("usage: rlr_serial.py announce <port>", file=sys.stderr); sys.exit(1)
+        sys.exit(cmd_send(args[0], "ANNOUNCE"))
     if sub == "status":
         if len(args) != 1:
             print("usage: rlr_serial.py status <port>", file=sys.stderr); sys.exit(1)

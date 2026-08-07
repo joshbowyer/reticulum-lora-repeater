@@ -753,6 +753,36 @@ show_value() {
 # human-readable labels as the interactive configure walkthrough.
 # No prompts, no writes to the device.
 
+cmd_announce() {
+    local dev=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown announce flag: $1 (use --help)" ;;
+        esac
+    done
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for announce") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+
+    log "sending ANNOUNCE to $dev ..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" announce "$dev"; then
+        die "ANNOUNCE failed (see output above)."
+    fi
+    echo
+    echo "Note: a node can't send telemetry to its configured collector until"
+    echo "it has heard an announce FROM the collector at least once (needed to"
+    echo "encrypt to it) — this command announces the NODE itself outward, which"
+    echo "helps others reach it, but if telemetry still isn't showing up on your"
+    echo "collector's page, the collector itself may need to (re-)announce too"
+    echo "(e.g. restart the collector daemon) so this node can hear it back."
+}
+
 cmd_show() {
     local dev=""
     while [ $# -gt 0 ]; do
@@ -992,6 +1022,23 @@ cmd_import() {
         exit 3
     fi
     echo
+
+    # A cloned node can't send telemetry to its configured collector until
+    # it has heard an announce FROM the collector at least once (needed to
+    # encrypt to it) - this bit a real user (config looked fine, nothing
+    # showed up on the collector's page). Offer to send this node's own
+    # ANNOUNCE right now, which at minimum helps others path to it sooner
+    # than waiting for its next internal announce interval.
+    local announce_confirm
+    if read -r -p "Send ANNOUNCE now so this node is reachable sooner? [Y/n] " announce_confirm; then
+        case "${announce_confirm,,}" in
+            ""|y|yes)
+                log "sending ANNOUNCE to $dev ..."
+                "$PYTHON_BIN" "$SERIAL_HELPER" announce "$dev" || warn "ANNOUNCE failed (see output above) — you can retry with: $0 announce --dev $dev"
+                ;;
+        esac
+    fi
+    echo
 }
 
 
@@ -1081,8 +1128,9 @@ a terminal. Works on Linux only (uses /dev/ttyACM* / /dev/ttyUSB*).
 Usage:
   rlr.sh flash [--dev <port>] [--board <env>] [--firmware <path>]
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
-  rlr.sh show [--dev <port>]
-  rlr.sh export [--dev <port>] [--file <path>]
+   rlr.sh show [--dev <port>]
+   rlr.sh announce [--dev <port>]
+   rlr.sh export [--dev <port>] [--file <path>]
   rlr.sh import [--dev <port>] [--file <path>]
   rlr.sh wipe [--dev <port>] [--yes]
   rlr.sh --help | -h | help
@@ -1147,6 +1195,23 @@ Subcommands:
   show
     Read-only: print the device's current config, one field per
     line with a human-readable label, no prompts, no writes.
+
+    Optional:
+      --dev <port>  Serial port. Auto-detected if omitted and
+                    exactly one candidate exists.
+
+  announce
+    Send the ANNOUNCE serial command — forces an immediate LXMF
+    presence + telemetry announce instead of waiting for the
+    device's next internal announce interval. Useful right after
+    `configure`/`import` to make a node reachable sooner, and to
+    diagnose "telemetry isn't showing up on my collector" issues:
+    a node can't encrypt telemetry to its configured collector
+    until it has heard an announce FROM the collector at least once
+    - if that hasn't happened yet, this node-side announce alone
+    won't fix it; the collector itself may need to (re-)announce
+    (e.g. restart the collector daemon) so this node can hear it
+    back.
 
     Optional:
       --dev <port>  Serial port. Auto-detected if omitted and
@@ -1274,6 +1339,7 @@ case "$SUBCMD" in
     flash)      cmd_flash "$@" ;;
     configure)  cmd_configure "$@" ;;
     show)       cmd_show "$@" ;;
+    announce)   cmd_announce "$@" ;;
     export)     cmd_export "$@" ;;
     import)     cmd_import "$@" ;;
     wipe)       cmd_wipe "$@" ;;
