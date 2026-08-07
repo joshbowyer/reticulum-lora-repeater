@@ -744,6 +744,204 @@ cmd_show() {
 }
 
 
+# === subcommand: export ===========================================
+#
+# Read-only: fetch CONFIG GET and write it as JSON to a file (default
+# config.json in the CWD). Meant for cloning one node's known-good
+# config across multiple new nodes via `import`.
+
+require_jq() {
+    command -v jq >/dev/null 2>&1 || die "jq is required for export/import. Install it with your package manager (e.g. apt install jq / brew install jq)."
+}
+
+cmd_export() {
+    local dev="" file="config.json"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --file)     file="$2"; shift 2 ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown export flag: $1 (use --help)" ;;
+        esac
+    done
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for export") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+    require_jq
+
+    log "fetching current config from $dev ..."
+    local payload
+    if ! payload=$("$PYTHON_BIN" "$SERIAL_HELPER" config-get "$dev"); then
+        die "CONFIG GET failed — could not read current values from the device."
+    fi
+
+    # CONFIG GET's payload is already "key=value" lines — turn that
+    # straight into a flat JSON object. Every value is kept as a JSON
+    # string (even numeric fields) since CONFIG SET's wire protocol is
+    # text-based anyway; round-tripping through import just sends the
+    # same strings back.
+    printf '%s\n' "$payload" | jq -R -n '
+        [inputs | select(length > 0) | split("=") | {(.[0]): (.[1:] | join("="))}] | add
+    ' > "$file" || die "failed to write $file"
+
+    echo
+    echo "Exported config from $dev to $file"
+    echo
+}
+
+
+# === subcommand: import ============================================
+#
+# Read a JSON config file (as produced by `export`) and apply it to a
+# device — meant for cloning a known-good node's config onto freshly
+# flashed nodes. display_name is deliberately NEVER taken from the
+# file (a cloned node shouldn't silently inherit another node's name)
+# — it's always prompted for interactively, even in this otherwise
+# non-interactive-ish flow, then applied together with everything else
+# in one CONFIG SET batch + COMMIT.
+
+# Given a device-side config key (e.g. "freq_hz"), print the matching
+# FIELDS flag (e.g. "freq"), or nothing + return 1 if unknown.
+flag_for_key() {
+    local key="$1" flag
+    for flag in "${!FIELDS[@]}"; do
+        local spec="${FIELDS[$flag]}"
+        if [ "${spec%%|*}" = "$key" ]; then
+            printf '%s\n' "$flag"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cmd_import() {
+    local dev="" file="config.json"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --file)     file="$2"; shift 2 ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown import flag: $1 (use --help)" ;;
+        esac
+    done
+    [ -f "$file" ] || die "import file not found: $file"
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for import") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+    require_jq
+
+    jq -e . "$file" >/dev/null 2>&1 || die "$file is not valid JSON"
+
+    # 1. Fetch current device config (for the change-summary display).
+    log "fetching current config from $dev ..."
+    local current_payload
+    if ! current_payload=$("$PYTHON_BIN" "$SERIAL_HELPER" config-get "$dev"); then
+        die "CONFIG GET failed — could not read current values from the device."
+    fi
+    declare -A CONFIG_GET_VALUES=()
+    parse_config_get "$current_payload"
+
+    # 2. Walk every key in the import file, skip display_name, validate
+    #    the rest against this device firmware's known field table.
+    declare -a IMPORT_CHANGES=()
+    local key value flag spec type
+    while IFS=$'\t' read -r key value; do
+        [ -z "$key" ] && continue
+        if [ "$key" = "display_name" ]; then
+            continue
+        fi
+        if ! flag=$(flag_for_key "$key"); then
+            warn "skipping unknown field in $file: $key (not a field this firmware version recognizes)"
+            continue
+        fi
+        spec="${FIELDS[$flag]}"
+        local rest="${spec#*|}"
+        type="${rest%%|*}"
+        if ! validate_value "$type" "$value" "$flag"; then
+            warn "skipping $key=$value from $file: $VALIDATE_ERR"
+            continue
+        fi
+        IMPORT_CHANGES+=("$flag|$key|${CONFIG_GET_VALUES[$key]:-}|$value")
+    done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' "$file")
+
+    # 3. Always prompt for display_name — never silently cloned.
+    local name_spec="${FIELDS[name]}"
+    local name_rest="${name_spec#*|}"
+    local name_type="${name_rest%%|*}"
+    local name_prompt="${name_rest#*|}"
+    local name_current="${CONFIG_GET_VALUES[display_name]:-}"
+    local name_input
+    while true; do
+        if ! read -r -p "$name_prompt [$name_current]: " name_input; then
+            die "input closed"
+        fi
+        [ -z "$name_input" ] && name_input="$name_current"
+        if validate_value "$name_type" "$name_input" "name"; then
+            break
+        fi
+        echo "  -> invalid: $VALIDATE_ERR" >&2
+    done
+    if [ "$name_input" != "$name_current" ]; then
+        IMPORT_CHANGES+=("name|display_name|$name_current|$name_input")
+    fi
+
+    # 4. Summarize + confirm, same pattern as configure's interactive walkthrough.
+    echo
+    if [ "${#IMPORT_CHANGES[@]}" -eq 0 ]; then
+        echo "No changes — device already matches $file (and name unchanged)."
+        exit 0
+    fi
+    echo "Changes to apply (from $file):"
+    for change in "${IMPORT_CHANGES[@]}"; do
+        IFS='|' read -r _f k o n <<< "$change"
+        printf '  %-22s %s -> %s\n' "$k" "$(show_value "$o")" "$(show_value "$n")"
+    done
+    echo
+    local confirm
+    if ! read -r -p "Commit these changes? [Y/n] " confirm; then
+        die "input closed"
+    fi
+    case "${confirm,,}" in
+        ""|y|yes) : ;;
+        *) echo "Aborted, no changes made"; exit 0 ;;
+    esac
+
+    # 5. Apply + commit.
+    log "applying ${#IMPORT_CHANGES[@]} change(s) to $dev ..."
+    for change in "${IMPORT_CHANGES[@]}"; do
+        IFS='|' read -r _f k _o n <<< "$change"
+        log "  CONFIG SET $k $n"
+        if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-set "$dev" "$k" "$n" >/dev/null; then
+            die "device rejected CONFIG SET $k (see error above). Nothing has been committed yet."
+        fi
+    done
+
+    log "CONFIG COMMIT — persisting + rebooting..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-commit "$dev" >/dev/null 2>&1; then
+        die "device rejected CONFIG COMMIT (see error above). Settings are staged on the device but not persisted."
+    fi
+
+    log "committed — waiting 3s for the device to reboot..."
+    sleep 3
+    echo
+    echo "Final config (after reboot):"
+    echo
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-get "$dev"; then
+        warn "could not read back the new config — device is likely still rebooting. Re-run '$0 show --dev $dev' in a few seconds to verify."
+        exit 3
+    fi
+    echo
+}
+
+
 # === subcommand: wipe =============================================
 #
 # Resets ALL config fields to firmware factory defaults (CONFIG RESET)
@@ -831,6 +1029,8 @@ Usage:
   rlr.sh flash [--dev <port>] [--board <env>] [--firmware <path>]
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
   rlr.sh show [--dev <port>]
+  rlr.sh export [--dev <port>] [--file <path>]
+  rlr.sh import [--dev <port>] [--file <path>]
   rlr.sh wipe [--dev <port>] [--yes]
   rlr.sh --help | -h | help
 
@@ -899,6 +1099,32 @@ Subcommands:
       --dev <port>  Serial port. Auto-detected if omitted and
                     exactly one candidate exists.
 
+  export
+    Read-only: fetch the device's current config and write it as
+    JSON to a file, for cloning across multiple new nodes with
+    `import`.
+
+    Optional:
+      --dev <port>   Serial port. Auto-detected if omitted and
+                     exactly one candidate exists.
+      --file <path>  Output file (default: config.json in the CWD).
+
+  import
+    Apply a previously-exported JSON config file to a device.
+    display_name is NEVER taken from the file — a cloned node
+    shouldn't silently inherit another node's name — you're always
+    prompted for it interactively (defaulting to the device's
+    current name), then it's applied together with everything else
+    in one commit. Shows a change summary and asks for confirmation
+    before applying anything, same as configure's interactive mode.
+
+    Optional:
+      --dev <port>   Serial port. Auto-detected if omitted and
+                     exactly one candidate exists.
+      --file <path>  Input file (default: config.json in the CWD).
+
+    Requires `jq` (for both export and import).
+
   wipe
     Reset ALL config on the device to firmware factory defaults
     (frequency, TX power, display name, collector, calibration —
@@ -955,6 +1181,16 @@ Examples:
   # Print a node's current config, neatly, read-only
   rlr.sh show --dev /dev/ttyACM0
 
+  # Set up one node, confirm it's good, save its config for cloning
+  rlr.sh configure --dev /dev/ttyACM0
+  rlr.sh show --dev /dev/ttyACM0
+  rlr.sh export --dev /dev/ttyACM0 --file site-config.json
+
+  # Flash + clone that config onto each subsequent node (prompts for
+  # a new display name, applies everything else, one commit)
+  rlr.sh flash --dev /dev/ttyACM0 --board RAK4631
+  rlr.sh import --dev /dev/ttyACM0 --file site-config.json
+
   # Reset a node back to factory defaults (destructive, asks to confirm)
   rlr.sh wipe --dev /dev/ttyACM0
 
@@ -985,6 +1221,8 @@ case "$SUBCMD" in
     flash)      cmd_flash "$@" ;;
     configure)  cmd_configure "$@" ;;
     show)       cmd_show "$@" ;;
+    export)     cmd_export "$@" ;;
+    import)     cmd_import "$@" ;;
     wipe)       cmd_wipe "$@" ;;
     --help|-h|help) usage; exit 0 ;;
     *)
