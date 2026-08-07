@@ -13,7 +13,7 @@ Usage:
     python3 set-collector.py /dev/ttyACM0 --show
 
 Examples:
-    python3 set-collector.py /dev/ttyACM0 da424e0f47657d7575df58a2b83b111b
+    python3 set-collector.py /dev/ttyACM0 0123456789abcdef0123456789abcdef
     python3 set-collector.py /dev/ttyACM0 --show
 
 Exit codes: 0 success, 1 bad arguments/invalid hash, 2 device rejected the

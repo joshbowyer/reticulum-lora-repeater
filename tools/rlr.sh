@@ -801,7 +801,7 @@ Examples:
   rlr.sh configure --dev /dev/ttyACM0 \
       --freq 904375000 --bw 250000 --sf 10 --txp 22 --tx-enabled 1 \
       --name "Roof Site North" \
-      --collector da424e0f47657d7575df58a2b83b111b
+      --collector 0123456789abcdef0123456789abcdef
 
   # Reset a node back to factory defaults (destructive, asks to confirm)
   rlr.sh wipe --dev /dev/ttyACM0
