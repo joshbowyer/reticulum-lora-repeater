@@ -26,13 +26,15 @@ running a dedicated repeater without a toolchain install.
 **Option B — command line (`tools/rlr.sh`):**
 
 ```bash
-pip3 install pyserial adafruit-nrfutil   # if not already installed
+pip3 install pyserial platformio   # if not already installed
 
-tools/rlr.sh flash --dev /dev/ttyACM0 --firmware firmware.zip
-tools/rlr.sh configure --dev /dev/ttyACM0   # interactive walkthrough, prompts for every field
+tools/rlr.sh flash --dev /dev/ttyACM0 --board RAK4631   # builds + flashes from this repo checkout
+tools/rlr.sh configure --dev /dev/ttyACM0               # interactive walkthrough, prompts for every field
 ```
-See `tools/rlr.sh --help` for the full field list, single-field quick-change syntax
-(`rlr.sh configure --dev <port> --cr 5`), and the `wipe` subcommand (factory reset).
+Or just run `tools/rlr.sh flash` with no arguments and it'll prompt you for a port and a
+board. See `tools/rlr.sh --help` for the full field list, single-field quick-change syntax
+(`rlr.sh configure --dev <port> --cr 5`), `show` (read-only config dump), and `wipe`
+(factory reset).
 
 The node boots, starts relaying Reticulum packets over LoRa, and
 announces itself on the mesh.

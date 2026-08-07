@@ -241,10 +241,26 @@ cmd_flash() {
             *)          die "unknown flash flag: $1 (use --help)" ;;
         esac
     done
-    [ -n "$dev" ]      || die "--dev is required (try --help)"
-    [ -n "$firmware" ] || die "--firmware is required (try --help)"
-    [ -e "$dev" ]      || die "serial port not found: $dev"
-    [ -f "$firmware" ] || die "firmware file not found: $firmware"
+
+    # --dev: auto-detect/prompt, same as configure/show/wipe.
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for flash") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    if [ -n "$firmware" ]; then
+        [ -f "$firmware" ] || die "firmware file not found: $firmware"
+    else
+        # No --firmware given: the primary path for this project is
+        # `pio run -e <env> -t upload`, which builds AND flashes in
+        # one step from a checked-out repo — there's no separate
+        # prebuilt firmware.zip step in normal developer/user usage
+        # (unlike some other flashing ecosystems). Resolve --board,
+        # prompting interactively if it wasn't given.
+        if [ -z "$board" ]; then
+            board=$(pick_board_interactive) || exit 1
+        fi
+    fi
 
     require_serial_helper
 
@@ -265,7 +281,11 @@ cmd_flash() {
     fi
 
     # 2. Flash
-    log "flashing $(basename "$firmware") to $dev ..."
+    if [ -n "$firmware" ]; then
+        log "flashing $(basename "$firmware") to $dev ..."
+    else
+        log "building + flashing env '$board' to $dev (pio run -t upload) ..."
+    fi
     if ! flash_firmware "$dev" "$firmware" "$board"; then
         die "flash tool exited with error (see output above). Device may be in a half-flashed state — re-run with --dev <same-port> to retry."
     fi
@@ -317,44 +337,102 @@ pick_port_interactive_quiet() {
     return 1
 }
 
-# Run the actual flash. Tries adafruit-nrfutil first (works from a
-# prebuilt .zip anywhere), falls back to `pio run -t upload` from a
-# repo checkout if --board <env> was given.
+# Find the PlatformIO CLI binary, if any. Echoes "pio" or "platformio",
+# or nothing (and returns 1) if neither is on PATH.
+find_pio_cmd() {
+    if command -v pio >/dev/null 2>&1; then
+        echo pio; return 0
+    elif command -v platformio >/dev/null 2>&1; then
+        echo platformio; return 0
+    fi
+    return 1
+}
+
+# Resolve this repo's root (tools/rlr.sh's parent directory) and
+# confirm platformio.ini is there. Dies if not — used only on the
+# PlatformIO path, which requires a real checkout.
+require_repo_root() {
+    local repo_root
+    repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+    if [ ! -f "$repo_root/platformio.ini" ]; then
+        die "this needs a checked-out reticulum-lora-repeater repo next to tools/rlr.sh (no platformio.ini found at $repo_root)"
+    fi
+    printf '%s\n' "$repo_root"
+}
+
+# List the PlatformIO env names defined in platformio.ini (excluding
+# the "native" test-only env), for the interactive board picker.
+list_pio_envs() {
+    local repo_root="$1"
+    grep -oP '^\[env:\K[^\]]+' "$repo_root/platformio.ini" | grep -v '^native$'
+}
+
+# Prompt the user to pick a PlatformIO env (board) when --board
+# wasn't given and --firmware wasn't either. Requires a repo checkout.
+pick_board_interactive() {
+    local repo_root
+    repo_root=$(require_repo_root) || return 1
+    local envs
+    envs="$(list_pio_envs "$repo_root")"
+    local count
+    count=$(printf '%s\n' "$envs" | grep -c . || true)
+
+    if [ "$count" -eq 0 ]; then
+        die "no PlatformIO envs found in $repo_root/platformio.ini"
+    fi
+
+    printf 'Which board?\n' >&2
+    local i=1 e
+    while IFS= read -r e; do
+        printf '  %d) %s\n' "$i" "$e" >&2
+        i=$((i+1))
+    done <<< "$envs"
+    local choice
+    local max="$count"
+    while true; do
+        read -r -p "Pick a board [1-$max]: " choice || die "input closed"
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$max" ]; then
+            break
+        fi
+        echo "invalid choice: '$choice'" >&2
+    done
+    printf '%s\n' "$envs" | sed -n "${choice}p"
+}
+
+# Run the actual flash.
+#
+# Primary path (no --firmware given): `pio run -e <board> -t upload`
+# from a checked-out repo — this is how this project is actually
+# built and flashed day to day (builds AND flashes in one step, no
+# separate firmware.zip artifact in normal use).
+#
+# Secondary path (--firmware <path> given): adafruit-nrfutil against
+# a prebuilt DFU .zip/.uf2 — useful if you have a release artifact
+# but not a repo checkout (e.g. a CI-built release download).
 flash_firmware() {
     local dev="$1" firmware="$2" board="$3"
 
-    if command -v adafruit-nrfutil >/dev/null 2>&1; then
-        log "using adafruit-nrfutil"
-        adafruit-nrfutil dfu serial -pkg "$firmware" -p "$dev" -b 115200
-        return $?
-    fi
-
-    local pio_cmd=""
-    if command -v pio >/dev/null 2>&1; then
-        pio_cmd=pio
-    elif command -v platformio >/dev/null 2>&1; then
-        pio_cmd=platformio
-    fi
-
-    if [ -n "$pio_cmd" ]; then
-        if [ -z "$board" ]; then
-            die "adafruit-nrfutil not found and --board <env> was not given (the PlatformIO fallback needs it to know which env to build)"
+    if [ -n "$firmware" ]; then
+        if command -v adafruit-nrfutil >/dev/null 2>&1; then
+            log "using adafruit-nrfutil"
+            adafruit-nrfutil dfu serial -pkg "$firmware" -p "$dev" -b 115200
+            return $?
         fi
-        # Resolve repo root from this script's location; flash from there
-        # so platformio.ini + .pio/ are in scope.
-        local repo_root
-        repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
-        if [ ! -f "$repo_root/platformio.ini" ]; then
-            die "PlatformIO fallback needs a checked-out reticulum-lora-repeater repo next to tools/rlr.sh (no platformio.ini found at $repo_root)"
-        fi
-        log "using $pio_cmd run -e $board -t upload (PlatformIO fallback)"
-        ( cd "$repo_root" && "$pio_cmd" run -e "$board" -t upload --upload-port "$dev" )
-        return $?
+        die "--firmware was given but adafruit-nrfutil is not installed. Install with:
+    pip3 install adafruit-nrfutil
+Or drop --firmware and pass --board <env> instead to build+flash directly via PlatformIO from a repo checkout."
     fi
 
-    die "no flasher found. Install one of:
-    pip3 install adafruit-nrfutil    (recommended; works from a prebuilt .zip anywhere)
-    pip3 install platformio           + run from inside a checked-out repo with --board <env>"
+    local pio_cmd
+    pio_cmd=$(find_pio_cmd) || die "no flasher found. Install one of:
+    pip3 install platformio          (recommended if you have this repo checked out; builds + flashes directly, no separate firmware.zip needed)
+    pip3 install adafruit-nrfutil    + pass --firmware <path-to-prebuilt-zip> (if you only have a prebuilt release artifact, no repo checkout)"
+
+    local repo_root
+    repo_root=$(require_repo_root) || exit 1
+    log "using $pio_cmd run -e $board -t upload"
+    ( cd "$repo_root" && "$pio_cmd" run -e "$board" -t upload --upload-port "$dev" )
+    return $?
 }
 
 
@@ -750,7 +828,7 @@ the command line. Mirrors what the project's web flasher does, but in
 a terminal. Works on Linux only (uses /dev/ttyACM* / /dev/ttyUSB*).
 
 Usage:
-  rlr.sh flash --dev <port> --firmware <path> [--board <env>]
+  rlr.sh flash [--dev <port>] [--board <env>] [--firmware <path>]
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
   rlr.sh show [--dev <port>]
   rlr.sh wipe [--dev <port>] [--yes]
@@ -763,29 +841,40 @@ Subcommands:
     firmware, sends the DFU serial command to reboot into the CDC-
     serial DFU bootloader first; otherwise flashes directly.
 
-    Required:
-      --dev <port>       Serial port to flash through (e.g.
-                         /dev/ttyACM0). If the device re-enumerates
-                         after entering DFU or after flashing, the
-                         script auto-detects the new port.
-      --firmware <path>  Prebuilt firmware file. A DFU .zip package
-                         (what `pio run -e <env>` produces at
-                         .pio/build/<env>/firmware.zip) or a .uf2.
+    All flags are optional and will be prompted for interactively if
+    omitted — running `rlr.sh flash` with no arguments at all walks
+    you through picking a port and a board.
 
-    Optional:
+      --dev <port>       Serial port to flash through (e.g.
+                         /dev/ttyACM0). Auto-detected if omitted and
+                         exactly one candidate exists; prompted for
+                         otherwise. If the device re-enumerates after
+                         entering DFU or after flashing, the script
+                         auto-detects the new port too.
       --board <env>      PlatformIO env name (e.g. Faketec,
                          RAK4631, RAK3401, XIAO_nRF52840,
-                         Heltec_T114, T-Echo). Only needed for the
-                         PlatformIO fallback if adafruit-nrfutil
-                         isn't installed.
+                         Heltec_T114, T-Echo). Used with the primary
+                         flash path (see below) — prompted for
+                         interactively if omitted and --firmware
+                         wasn't given either.
+      --firmware <path>  Prebuilt DFU firmware file (.zip or .uf2) —
+                         only needed if you have a release artifact
+                         but NOT a checked-out copy of this repo (see
+                         secondary path below). Most users building
+                         from source should use --board instead, or
+                         nothing at all (you'll be prompted).
 
-    Flasher tool preference:
-      1. adafruit-nrfutil (pip3 install adafruit-nrfutil) — works
-         from a prebuilt .zip anywhere, no repo checkout needed.
-      2. PlatformIO `pio run -t upload` from inside a checked-out
-         copy of this repo, with --board <env>.
-      If neither is available, the script prints install instructions
-      and exits nonzero.
+    Flash path:
+      1. Primary — no --firmware given: `pio run -e <board> -t upload`
+         from a checked-out copy of this repo. This builds AND flashes
+         in one step and is how this project is normally built/flashed
+         day to day. Requires PlatformIO (`pip3 install platformio`)
+         and this script to be run from inside (or next to) a repo
+         checkout.
+      2. Secondary — --firmware <path> given: adafruit-nrfutil against
+         a prebuilt DFU package. Useful if you only have a release
+         download and no repo checkout. Requires
+         `pip3 install adafruit-nrfutil`.
 
   configure
     Edit runtime configuration via the serial console.
@@ -850,7 +939,8 @@ Configurable fields (CLI flag, device config key, type, range):
 Examples:
 
   # Full from-scratch flash + configure sequence
-  rlr.sh flash   --dev /dev/ttyACM0 --firmware firmware.zip
+  rlr.sh flash   --dev /dev/ttyACM0 --board RAK4631   # from a repo checkout
+  rlr.sh flash                                        # or just be prompted for everything
   rlr.sh configure --dev /dev/ttyACM0       # walks through every field
 
   # Single-field quick change
