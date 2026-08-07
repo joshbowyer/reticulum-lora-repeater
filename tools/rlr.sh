@@ -279,13 +279,31 @@ cmd_flash() {
     else
         # No response could mean the device is already in the bootloader
         # (fine) — but it could just as easily mean the app has crashed,
-        # the board is genuinely fresh/never-flashed, or something else is
-        # wrong. Blindly assuming bootloader and proceeding straight to a
-        # DFU upload has caused real failures ("No data received on serial
-        # port... Target is not in DFU mode"). Ask instead of assuming.
-        warn "no response on $dev — this could mean the device is already in the bootloader, OR that it isn't in DFU mode at all."
-        echo "    If the upload below fails with a DFU/timeout error, physically double-tap the RESET button now (this forces bootloader entry on most nRF52 boards), then press Enter."
-        read -r -p "Press Enter to continue (or double-tap RESET first if you're not sure): " _
+        # the board is genuinely fresh/never-flashed, or the port re-
+        # enumerated already. Blindly assuming bootloader and proceeding
+        # straight to a DFU upload has caused real failures ("No data
+        # received on serial port... Target is not in DFU mode").
+        #
+        # Try a software-only "1200-baud touch" first — the standard
+        # Arduino/Adafruit trick that's equivalent to a physical
+        # double-tap of RESET on most nRF52 boards, useful when the
+        # device is sealed/inaccessible. This does NOT guarantee success
+        # (depends on the app firmware's USB stack still being alive to
+        # notice the touch), so we still fall back to a manual prompt if
+        # it doesn't clearly land on a bootloader-looking port.
+        warn "no response on $dev — trying a 1200-baud touch to force bootloader entry (no physical access needed)..."
+        "$PYTHON_BIN" "$SERIAL_HELPER" touch "$dev" >/dev/null 2>&1 || true
+        log "waiting 3s for the bootloader to (re-)enumerate..."
+        sleep 3
+        local touched_port=""
+        if touched_port=$(pick_port_interactive_quiet 2>/dev/null) && [ -n "$touched_port" ]; then
+            if [ "$touched_port" != "$dev" ]; then
+                log "port changed after touch: $dev -> $touched_port"
+            fi
+            dev="$touched_port"
+        else
+            warn "couldn't confirm a single port after the touch attempt — continuing with $dev, but if the upload fails: this device may need a physical RESET (double-tap) if it's not sealed, or may already be fine as-is."
+        fi
     fi
 
     # 2. Flash

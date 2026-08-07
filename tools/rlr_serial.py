@@ -166,6 +166,28 @@ def cmd_probe(port):
     return 0
 
 
+def cmd_touch(port):
+    """1200-baud 'touch': open the port at 1200 baud then close it. This
+    is the standard software-only bootloader-entry trick for
+    Arduino/Adafruit boards (equivalent to a physical double-tap of
+    RESET on most nRF52 boards using the Adafruit bootloader) - useful
+    when the device is sealed/inaccessible and a hard reset isn't an
+    option. Does not itself detect re-enumeration; the caller
+    (rlr.sh) is responsible for re-scanning for the port afterward,
+    since many boards enumerate the bootloader on a different
+    /dev/ttyACM* path than the app was using.
+    """
+    try:
+        touch_port = serial.Serial(port=port, baudrate=1200, timeout=1)
+    except Exception as e:
+        print(f"error: could not open {port} at 1200 baud for touch: {e}", file=sys.stderr)
+        return 1
+    time.sleep(0.25)
+    touch_port.close()
+    print(f"touched {port} at 1200 baud")
+    return 0
+
+
 def cmd_send(port, cmd, timeout=DEFAULT_TIMEOUT, retry=False):
     """Send a command, print payload lines, return exit code (0/2/3)."""
     ser = open_port(port)
@@ -203,6 +225,10 @@ def main():
         if len(args) != 1:
             print("usage: rlr_serial.py dfu <port>", file=sys.stderr); sys.exit(1)
         sys.exit(cmd_send(args[0], "DFU"))
+    if sub == "touch":
+        if len(args) != 1:
+            print("usage: rlr_serial.py touch <port>", file=sys.stderr); sys.exit(1)
+        sys.exit(cmd_touch(args[0]))
     if sub == "status":
         if len(args) != 1:
             print("usage: rlr_serial.py status <port>", file=sys.stderr); sys.exit(1)
