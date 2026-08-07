@@ -292,6 +292,7 @@ cmd_flash() {
         # notice the touch), so we still fall back to a manual prompt if
         # it doesn't clearly land on a bootloader-looking port.
         warn "no response on $dev — trying a 1200-baud touch to force bootloader entry (no physical access needed)..."
+        warn "note: the touch only works if this device has run compatible app firmware before (it's the app's USB stack that detects the touch, not the bootloader). A board that has NEVER been flashed with this project's firmware will need one physical RESET (or double-tap) the first time — after that, the touch will work on it too."
         "$PYTHON_BIN" "$SERIAL_HELPER" touch "$dev" >/dev/null 2>&1 || true
         log "waiting 3s for the bootloader to (re-)enumerate..."
         sleep 3
@@ -313,7 +314,9 @@ cmd_flash() {
         log "building + flashing env '$board' to $dev (pio run -t upload) ..."
     fi
     if ! flash_firmware "$dev" "$firmware" "$board"; then
-        die "flash tool exited with error (see output above). Device may be in a half-flashed state — re-run with --dev <same-port> to retry."
+        die "flash tool exited with error (see output above). Device may be in a half-flashed state — re-run with --dev <same-port> to retry.
+
+If this device has NEVER been flashed with this project's firmware before, the 1200-baud touch above cannot help it — that trick only works because the APPLICATION firmware's USB stack detects the touch and jumps to the bootloader; a board with no compatible app running (bootloader-only/factory state, or third-party firmware) has nothing listening for it. A single physical RESET (or double-tap, depending on the board) is unavoidable the FIRST time on such a device. After that first successful flash, the touch will work on it going forward — this is a one-time requirement per device, not per session."
     fi
 
     # 3. Wait for app reboot + re-enumeration
