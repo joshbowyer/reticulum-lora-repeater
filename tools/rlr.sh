@@ -330,6 +330,24 @@ If this device has NEVER been flashed with this project's firmware before, the 1
         new_port=""
     fi
 
+    # Sanity check: RAK4631/RAK3401 (and other boards sharing the same
+    # bootloader/board target) are indistinguishable to the flash tool
+    # itself - picking the wrong --board silently succeeds at the DFU
+    # level but produces firmware that can't talk to the actual radio
+    # wired up on that specific board (wrong SPI/control pins -> RadioLib
+    # CHIP_NOT_FOUND). STATUS's radio=down after a fresh flash is the
+    # first visible symptom of this - check for it here instead of
+    # leaving the user to discover it later via a confusing "radio not
+    # online" error on some unrelated command.
+    local radio_warning=""
+    if [ -n "$new_port" ]; then
+        local status_out
+        status_out=$("$PYTHON_BIN" "$SERIAL_HELPER" status "$new_port" 2>/dev/null) || true
+        if printf '%s\n' "$status_out" | grep -q '^radio=down'; then
+            radio_warning="yes"
+        fi
+    fi
+
     cat <<EOF
 
 Flash complete!
@@ -340,6 +358,16 @@ set your frequency, region-legal TX power, display name, and a telemetry
 collector (if you have one) before relying on it for traffic.
 
 EOF
+    if [ "$radio_warning" = "yes" ]; then
+        echo "WARNING: radio=down right after flashing. This usually means the"
+        echo "wrong --board was picked (e.g. flashing RAK4631 firmware onto an"
+        echo "actual RAK3401, or vice versa — they use the same bootloader/DFU"
+        echo "target so the flash tool can't tell them apart, but the pin"
+        echo "mapping differs and RadioLib fails to find the chip). Double"
+        echo "check which physical board this is, then re-flash with the"
+        echo "correct --board."
+        echo
+    fi
     if [ -n "$new_port" ]; then
         echo "Next step:"
         echo "    $0 configure --dev $new_port"
