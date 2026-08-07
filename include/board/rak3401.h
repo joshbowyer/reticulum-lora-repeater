@@ -52,6 +52,20 @@
 #define RADIO_DIO2_AS_RF_SWITCH 1
 #define RADIO_MAX_DBM           22     // SX1262 core max; ext PA adds gain
 
+// Optional register 0x8B5 patch (undocumented SX126x register) - MeshCore's
+// CustomSX1262.h applies this for "improved RX" on boards with an external
+// FEM (RAK3401/RAK13302, Heltec V4). Not required for basic RX to work (the
+// real root cause of this board's initial RX-dead symptom was a spreading
+// factor mismatch against the mesh, not this register) - kept here purely
+// for parity with the proven-working reference and any sensitivity gain it
+// provides.
+#define RADIO_SX126X_REGISTER_PATCH 1
+
+// TX current limit matching MeshCore's rak3401 env (SX126X_CURRENT_LIMIT=140
+// in their platformio.ini) - the 1W external PA draws more current than the
+// SX1262 core's own default OCP threshold expects.
+#define RADIO_CURRENT_LIMIT_MA  140
+
 // ---- Pin numbers (pca10056 convention, 1:1 mapping) ----------------
 //
 // LoRa SPI uses the same physical pins as RAK4631's SPI1:
@@ -71,8 +85,24 @@
 // Power
 #define PIN_VEXT_EN             21    // P0.21 — SX126X_POWER_EN (radio 3V3 gate)
 #define VEXT_SETTLE_MS          10
-// Note: PIN_3V3_EN (34) gates the general 3V3 rail. We don't manage
-// it — it's assumed to be on by the bootloader/board init.
+//
+// PIN_3V3_EN / WB_IO2 (34, P1.02) — NOT just a generic "assumed on" rail.
+// Per RAK13302's actual FEM design (SKY66122-11): this pin gates the 5V
+// boost regulator (U5) that powers the PA/LNA front-end module itself.
+// SX126X_POWER_EN (21, above) only enables the FEM's CSD/CPS control
+// lines; WITHOUT this separate 5V rail also enabled, the FEM has no
+// supply at all. Symptom if left unmanaged: TX still radiates (weakly,
+// via whatever passive/leakage path exists without the PA's LNA/gain
+// stage powered), but RX is completely dead (zero packets received,
+// ever) since the LNA needed to receive anything has no power. This
+// was NOT understood when this board profile was first written — the
+// original assumption that "it's assumed to be on by the bootloader"
+// was wrong and left RX totally non-functional. Confirmed via MeshCore's
+// own RAK3401Board.cpp (the only public reference with correct RAK13302
+// FEM control), cross-referenced against Meshtastic's rak3401_1watt
+// variant (which drives this same pin high in its own main.cpp init).
+#define PIN_WB_IO2               34    // P1.02 — 5V boost enable for the RAK13302 FEM
+#define WB_IO2_SETTLE_MS         10
 
 // Battery — PIN_A0 = pin 5 (P0.05) via voltage divider
 #define PIN_BATTERY             5     // P0.05
@@ -85,7 +115,12 @@
 // ---- Default config values for first boot -------------------------
 #define DEFAULT_CONFIG_FREQ_HZ          915000000UL
 #define DEFAULT_CONFIG_BW_HZ            125000UL
-#define DEFAULT_CONFIG_SF               10
+// SF7 to match the rest of this mesh's convention (RAK4631/femtofox/local
+// reference RNode all run SF7). This board's default was originally SF10
+// (a reasonable-looking but untested guess) - confirmed via live hardware
+// bring-up that a mismatched SF here causes a 100% RX-dead symptom (freq/
+// bandwidth/sync word all matching is NOT sufficient; SF must match too).
+#define DEFAULT_CONFIG_SF               7
 #define DEFAULT_CONFIG_CR               5
 #define DEFAULT_CONFIG_TXP_DBM          22     // 1W PA, higher default
 #define DEFAULT_CONFIG_BATT_MULT        2.198f // same divider as RAK4631

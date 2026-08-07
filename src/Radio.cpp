@@ -65,7 +65,35 @@ static void isr_packet_received() {
 // ---- API ----------------------------------------------------------
 
 bool init_hardware() {
-    // 1. Gate the external 3V3 rail on boards that require it.
+    // 1a. Some boards gate a SEPARATE rail beyond the radio's own 3V3
+    //     (e.g. RAK3401's WB_IO2/PIN_3V3_EN=34, which powers the
+    //     RAK13302 1W PA's 5V boost regulator - distinct from
+    //     SX126X_POWER_EN/PIN_VEXT_EN below, which only enables the
+    //     PA/FEM's control lines, not its actual power supply). This
+    //     MUST be brought up BEFORE PIN_VEXT_EN below - the FEM's
+    //     control lines (CSD/CPS, gated by PIN_VEXT_EN) are only
+    //     meaningful once their own power rail is already established.
+    //     Order confirmed against MeshCore's proven-working
+    //     RAK3401Board.cpp (WB_IO2 HIGH first, then SX126X_POWER_EN
+    //     HIGH second) and matches this driver's own two pin/power
+    //     writes exactly - no other GPIO is needed for this FEM
+    //     (verified against MeshCore's variant.h/RAK3401Board.cpp: RX
+    //     path only needs CSD/CPS high via PIN_VEXT_EN + CTX low via
+    //     DIO2-as-RF-switch, both already handled). NOTE: on first
+    //     hardware bring-up this pin ordering was suspected as the
+    //     cause of a TX-works/RX-dead symptom on real RAK3401
+    //     hardware, but the actual root cause turned out to be a
+    //     spreading-factor mismatch against the rest of the mesh
+    //     (this board's DEFAULT_CONFIG_SF was 10, mesh convention is
+    //     7) - the ordering here is still correct per the reference
+    //     design and kept for correctness, it just wasn't the bug.
+    #if defined(PIN_WB_IO2) && PIN_WB_IO2 >= 0
+        pinMode(PIN_WB_IO2, OUTPUT);
+        digitalWrite(PIN_WB_IO2, HIGH);
+        delay(WB_IO2_SETTLE_MS);
+    #endif
+
+    // 1b. Gate the external 3V3 rail on boards that require it.
     //    Without this on Faketec (VEXT_EN = P0.13) the SX1262 is
     //    physically unpowered when we try to talk to it.
     #if HAS_VEXT_RAIL && defined(PIN_VEXT_EN) && PIN_VEXT_EN >= 0
@@ -134,6 +162,22 @@ bool begin(const Config& cfg) {
             Serial.println(state);
         }
     #endif
+
+    // Boards with a 1W+ external PA draw more current than the SX1262's
+    // own default OCP threshold expects - raise the limit to match.
+    #if defined(RADIO_CURRENT_LIMIT_MA) && RADIO_CURRENT_LIMIT_MA > 0
+        s_radio.setCurrentLimit((float)RADIO_CURRENT_LIMIT_MA);
+    #endif
+
+    // NOTE: MeshCore's CustomSX1262.h also applies an optional, undocumented
+    // register 0x8B5 patch for "improved RX" on external-FEM boards. Not
+    // implemented here: RadioLib's readRegister()/writeRegister() are
+    // `protected` on the base SX126x class, only reachable by subclassing
+    // (which MeshCore does via CustomSX1262 : public SX1262). Skipped since
+    // RX is already confirmed fully working without it and the upstream
+    // comment describes it as a sensitivity improvement, not a requirement -
+    // revisit via a small SX1262 subclass if RX range/sensitivity ever
+    // becomes a real concern on this board.
 
     #if defined(PIN_LORA_RXEN) && PIN_LORA_RXEN >= 0
         {
