@@ -616,6 +616,70 @@ show_value() {
 }
 
 
+# === subcommand: wipe =============================================
+#
+# Resets ALL config fields to firmware factory defaults (CONFIG RESET)
+# and persists it (CONFIG COMMIT). Destructive — always asks for
+# confirmation unless --yes is given. This exists as an explicit,
+# guarded top-level subcommand specifically so it's never reachable
+# by accident from configure's flow.
+
+cmd_wipe() {
+    local dev="" yes=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --yes)      yes=1; shift ;;
+            --help|-h)  usage; exit 0 ;;
+            *)          die "unknown wipe flag: $1 (use --help)" ;;
+        esac
+    done
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for wipe") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+
+    if [ "$yes" -ne 1 ]; then
+        echo "This will reset ALL config on $dev to firmware factory defaults"
+        echo "(frequency, TX power, display name, collector, calibration —"
+        echo "everything) and reboot the device. This cannot be undone."
+        echo
+        local confirm
+        if ! read -r -p "Type WIPE to confirm: " confirm; then
+            die "input closed"
+        fi
+        if [ "$confirm" != "WIPE" ]; then
+            echo "Aborted, no changes made"
+            exit 0
+        fi
+    fi
+
+    log "CONFIG RESET — reseeding staging from firmware defaults..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-reset "$dev" >/dev/null 2>&1; then
+        die "device rejected CONFIG RESET (see error above)."
+    fi
+
+    log "CONFIG COMMIT — persisting + rebooting..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-commit "$dev" >/dev/null 2>&1; then
+        die "device rejected CONFIG COMMIT (see error above). Defaults are staged on the device but not persisted."
+    fi
+
+    log "committed — waiting 3s for the device to reboot..."
+    sleep 3
+    echo
+    echo "Device wiped. Config is now factory default:"
+    echo
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-get "$dev"; then
+        warn "could not read back the config — device is likely still rebooting. Re-run '$0 configure --dev $dev' in a few seconds to verify."
+        exit 3
+    fi
+    echo
+}
+
+
 # === prereq check =================================================
 
 require_serial_helper() {
@@ -638,6 +702,7 @@ a terminal. Works on Linux only (uses /dev/ttyACM* / /dev/ttyUSB*).
 Usage:
   rlr.sh flash --dev <port> --firmware <path> [--board <env>]
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
+  rlr.sh wipe [--dev <port>] [--yes]
   rlr.sh --help | -h | help
 
 Subcommands:
@@ -686,6 +751,17 @@ Subcommands:
     port exists on the system at invocation. With zero or multiple
     ports, the script lists them and prompts to choose.
 
+  wipe
+    Reset ALL config on the device to firmware factory defaults
+    (frequency, TX power, display name, collector, calibration —
+    everything) and persist it. Destructive, cannot be undone.
+
+    Optional:
+      --dev <port>  Serial port. Auto-detected like configure if
+                    omitted and exactly one candidate exists.
+      --yes         Skip the "type WIPE to confirm" prompt (for
+                    scripted use — use with real care).
+
 Configurable fields (CLI flag, device config key, type, range):
 
   --name             display_name          string     1-31 chars, no '|'
@@ -727,6 +803,9 @@ Examples:
       --name "Roof Site North" \
       --collector da424e0f47657d7575df58a2b83b111b
 
+  # Reset a node back to factory defaults (destructive, asks to confirm)
+  rlr.sh wipe --dev /dev/ttyACM0
+
 Notes:
   - Requires python3 + pyserial:
       pip3 install pyserial
@@ -753,6 +832,7 @@ shift
 case "$SUBCMD" in
     flash)      cmd_flash "$@" ;;
     configure)  cmd_configure "$@" ;;
+    wipe)       cmd_wipe "$@" ;;
     --help|-h|help) usage; exit 0 ;;
     *)
         printf '[rlr.sh] error: unknown subcommand: %s\n\n' "$SUBCMD" >&2
