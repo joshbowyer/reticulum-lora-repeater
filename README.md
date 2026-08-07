@@ -76,7 +76,7 @@ change the display name, commit. Under 2 minutes per node after the first.
 | **RAK4631** (WisBlock Core) | Integrated SX1262 | **Hardware-validated** — LXMF presence announce confirmed received over LoRa by a real peer. Battery ADC pin corrected (P0.05/AIN3, matching Meshtastic's reference variant; was P0.04/AIN2) and divider multiplier corrected to RAK's own official constant. |
 | **XIAO nRF52840 Kit** (Seeed XIAO + Wio-SX1262 daughter) | SX1262 | Shipping — flash via UF2 drag-and-drop |
 | **Heltec Mesh Node T114** | Integrated SX1262 | Shipping in releases |
-| **RAK3401 1-Watt** (WisBlock + 1W PA) | SX1262 + 1W PA | Shipping in releases |
+| **RAK3401 1-Watt** (WisBlock + 1W PA) | SX1262 + 1W PA | **Hardware-validated** — TX and RX confirmed over LoRa against a reference node, plus end-to-end LXMF telemetry delivery. RAK13302 FEM power sequencing corrected (WB_IO2 5V boost rail must be enabled before SX126X_POWER_EN), TX current limit raised to 140mA for the 1W PA, and the board's default spreading factor corrected from SF10 to SF7 to match the rest of the mesh (a mismatched SF, not a hardware fault, was the actual cause of an initial 100%-dead RX symptom during bring-up). |
 | **LilyGO T-Echo** | Integrated SX1262 | Shipping — pins from Meshtastic, not yet bench-validated |
 
 All six boards share the same firmware source — each board is just
