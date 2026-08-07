@@ -13,6 +13,8 @@ running a dedicated repeater without a toolchain install.
 
 ## Quick start
 
+**Option A — web flasher (no tools needed):**
+
 1. Visit **https://thatSFguy.github.io/reticulum-lora-repeater/**
 2. On the **Flash** tab, pick your **board** and **version**, click **Connect & flash**
 3. Pick the board's USB port — it reboots itself into the bootloader
@@ -20,6 +22,17 @@ running a dedicated repeater without a toolchain install.
    **Select bootloader port & flash** and pick the new port
 4. After flashing, switch to the **Configure** tab, click **Connect USB** or **Connect BLE**
 5. Edit your config (frequency, display name, TX power, location, etc.) and click **Commit & Reboot**
+
+**Option B — command line (`tools/rlr.sh`):**
+
+```bash
+pip3 install pyserial adafruit-nrfutil   # if not already installed
+
+tools/rlr.sh flash --dev /dev/ttyACM0 --firmware firmware.zip
+tools/rlr.sh configure --dev /dev/ttyACM0   # interactive walkthrough, prompts for every field
+```
+See `tools/rlr.sh --help` for the full field list, single-field quick-change syntax
+(`rlr.sh configure --dev <port> --cr 5`), and the `wipe` subcommand (factory reset).
 
 The node boots, starts relaying Reticulum packets over LoRa, and
 announces itself on the mesh.
