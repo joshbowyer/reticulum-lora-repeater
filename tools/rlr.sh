@@ -277,7 +277,15 @@ cmd_flash() {
         # /dev/ttyACMx index on many boards.
         dev=$(pick_port_interactive "after DFU reboot") || exit 1
     else
-        log "no response on $dev — assuming the device is already in the bootloader, skipping DFU step"
+        # No response could mean the device is already in the bootloader
+        # (fine) — but it could just as easily mean the app has crashed,
+        # the board is genuinely fresh/never-flashed, or something else is
+        # wrong. Blindly assuming bootloader and proceeding straight to a
+        # DFU upload has caused real failures ("No data received on serial
+        # port... Target is not in DFU mode"). Ask instead of assuming.
+        warn "no response on $dev — this could mean the device is already in the bootloader, OR that it isn't in DFU mode at all."
+        echo "    If the upload below fails with a DFU/timeout error, physically double-tap the RESET button now (this forces bootloader entry on most nRF52 boards), then press Enter."
+        read -r -p "Press Enter to continue (or double-tap RESET first if you're not sure): " _
     fi
 
     # 2. Flash
@@ -409,30 +417,54 @@ pick_board_interactive() {
 # Secondary path (--firmware <path> given): adafruit-nrfutil against
 # a prebuilt DFU .zip/.uf2 — useful if you have a release artifact
 # but not a repo checkout (e.g. a CI-built release download).
+# Some DFU/upload failures (notably PlatformIO's nrfutil-based upload
+# action) get swallowed and reported as an overall SUCCESS exit code even
+# though the actual device upload clearly failed (e.g. "No data received
+# on serial port", "Target is not in DFU mode", "Timed out waiting for
+# acknowledgement"). Scan captured output for these signatures regardless
+# of the subprocess's own exit code, since trusting that exit code alone
+# has led directly to reporting "Flash complete!" on a half-flashed or
+# entirely un-flashed device.
+_flash_output_looks_failed() {
+    grep -qiE 'No data received on serial port|Target is not in DFU mode|Timed out waiting for acknowledgement|NordicSemiException|Failed to upgrade target' "$1"
+}
+
 flash_firmware() {
     local dev="$1" firmware="$2" board="$3"
+    local out_file
+    out_file=$(mktemp)
+    local rc
 
     if [ -n "$firmware" ]; then
         if command -v adafruit-nrfutil >/dev/null 2>&1; then
             log "using adafruit-nrfutil"
-            adafruit-nrfutil dfu serial -pkg "$firmware" -p "$dev" -b 115200
-            return $?
-        fi
-        die "--firmware was given but adafruit-nrfutil is not installed. Install with:
+            adafruit-nrfutil dfu serial -pkg "$firmware" -p "$dev" -b 115200 2>&1 | tee "$out_file"
+            rc=$?
+        else
+            rm -f "$out_file"
+            die "--firmware was given but adafruit-nrfutil is not installed. Install with:
     pip3 install adafruit-nrfutil
 Or drop --firmware and pass --board <env> instead to build+flash directly via PlatformIO from a repo checkout."
+        fi
+    else
+        local pio_cmd
+        pio_cmd=$(find_pio_cmd) || { rm -f "$out_file"; die "no flasher found. Install one of:
+    pip3 install platformio          (recommended if you have this repo checked out; builds + flashes directly, no separate firmware.zip needed)
+    pip3 install adafruit-nrfutil    + pass --firmware <path-to-prebuilt-zip> (if you only have a prebuilt release artifact, no repo checkout)"; }
+
+        local repo_root
+        repo_root=$(require_repo_root) || exit 1
+        log "using $pio_cmd run -e $board -t upload"
+        ( cd "$repo_root" && "$pio_cmd" run -e "$board" -t upload --upload-port "$dev" ) 2>&1 | tee "$out_file"
+        rc=$?
     fi
 
-    local pio_cmd
-    pio_cmd=$(find_pio_cmd) || die "no flasher found. Install one of:
-    pip3 install platformio          (recommended if you have this repo checked out; builds + flashes directly, no separate firmware.zip needed)
-    pip3 install adafruit-nrfutil    + pass --firmware <path-to-prebuilt-zip> (if you only have a prebuilt release artifact, no repo checkout)"
-
-    local repo_root
-    repo_root=$(require_repo_root) || exit 1
-    log "using $pio_cmd run -e $board -t upload"
-    ( cd "$repo_root" && "$pio_cmd" run -e "$board" -t upload --upload-port "$dev" )
-    return $?
+    if [ "$rc" -eq 0 ] && _flash_output_looks_failed "$out_file"; then
+        warn "the flash tool reported success, but its own output contains a known DFU-failure signature (this is a real PlatformIO/nrfutil quirk — the underlying upload error doesn't always propagate to the exit code). Treating this as a failure."
+        rc=1
+    fi
+    rm -f "$out_file"
+    return "$rc"
 }
 
 
