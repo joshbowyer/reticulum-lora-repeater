@@ -123,5 +123,15 @@
 #define DEFAULT_CONFIG_SF               7
 #define DEFAULT_CONFIG_CR               5
 #define DEFAULT_CONFIG_TXP_DBM          22     // 1W PA, higher default
-#define DEFAULT_CONFIG_BATT_MULT        2.198f // same divider as RAK4631
+// Previously 2.198f on the (wrong) assumption that this board uses "the
+// same divider as RAK4631" (RAK4631's own default is 1.26709f — note
+// even that comparison was internally inconsistent). Empirically
+// calibrated on real RAK3401 hardware via the serial console's
+// CALIBRATE BATTERY workflow (multimeter-measured 4190 mV vs.
+// battery_raw=2782, with USB disconnected to rule out charge-line
+// bias): batt_mult = 4190 / 2782 = 1.506111. Still just one sample —
+// per-board CALIBRATE BATTERY remains the source of truth; this is
+// only meant to get fresh-flash first-boot readings much closer to
+// correct than the old unverified guess.
+#define DEFAULT_CONFIG_BATT_MULT        1.506111f
 #define DEFAULT_CONFIG_DISPLAY_NAME     "RAK3401 Repeater"
