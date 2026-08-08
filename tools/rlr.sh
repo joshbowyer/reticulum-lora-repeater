@@ -812,23 +812,34 @@ cmd_announce() {
 }
 
 cmd_calibrate_battery() {
-    local dev="" mv=""
+    local dev="" mv="" mult=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --dev)      dev="$2"; shift 2 ;;
+            -r)         mv="$2"; shift 2 ;;
+            -m)         mult="$2"; shift 2 ;;
             --help|-h)  usage; exit 0 ;;
-            *)
-                if [ -z "$mv" ]; then mv="$1"; shift
-                else die "unknown calibrate-battery flag: $1 (use --help)"; fi
-                ;;
+            *)          die "unknown calibrate-battery flag: $1 (use --help)" ;;
         esac
     done
 
-    [ -n "$mv" ] || die "usage: rlr.sh calibrate-battery [--dev <port>] <measured_mv>
-  Measure the battery voltage with a multimeter first (ideally with
-  USB/charge power disconnected, to rule out charge-line bias), then
-  pass that reading in millivolts, e.g.:
-    rlr.sh calibrate-battery 4190"
+    local usage_msg="usage: rlr.sh calibrate-battery [--dev <port>] (-r <measured_mv> | -m <multiplier>)
+  -r <measured_mv>  Multimeter reading on the battery (ideally with USB/
+                    charge power disconnected). Firmware derives
+                    batt_mult from a live ADC read against this value.
+                    e.g. rlr.sh calibrate-battery -r 4190
+  -m <multiplier>   Directly stage a known/copied batt_mult constant —
+                    for sealed devices you can't get a multimeter on.
+                    e.g. rlr.sh calibrate-battery -m 1.5"
+
+    if [ -n "$mv" ] && [ -n "$mult" ]; then
+        die "pass only one of -r or -m, not both
+
+$usage_msg"
+    fi
+    if [ -z "$mv" ] && [ -z "$mult" ]; then
+        die "$usage_msg"
+    fi
 
     if [ -z "$dev" ]; then
         dev=$(pick_port_interactive "for calibrate-battery") || exit 1
@@ -837,9 +848,20 @@ cmd_calibrate_battery() {
 
     require_serial_helper
 
-    log "calibrating battery on $dev against measured ${mv} mV ..."
-    if ! "$PYTHON_BIN" "$SERIAL_HELPER" calibrate-battery "$dev" "$mv"; then
-        die "CALIBRATE BATTERY failed (see output above)."
+    if [ -n "$mv" ]; then
+        log "calibrating battery on $dev against measured ${mv} mV ..."
+        if ! "$PYTHON_BIN" "$SERIAL_HELPER" calibrate-battery "$dev" "$mv"; then
+            die "CALIBRATE BATTERY failed (see output above)."
+        fi
+    else
+        log "staging batt_mult=${mult} on $dev directly ..."
+        if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-set "$dev" batt_mult "$mult"; then
+            die "CONFIG SET batt_mult failed (see output above)."
+        fi
+        log "committing ..."
+        if ! "$PYTHON_BIN" "$SERIAL_HELPER" config-commit "$dev"; then
+            die "CONFIG COMMIT failed (see output above)."
+        fi
     fi
     echo
     echo "Calibrated + committed. The device reboots automatically after"
@@ -1258,7 +1280,7 @@ Usage:
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
    rlr.sh show [--dev <port>]
    rlr.sh announce [--dev <port>]
-   rlr.sh calibrate-battery [--dev <port>] <measured_mv>
+   rlr.sh calibrate-battery [--dev <port>] (-r <measured_mv> | -m <multiplier>)
    rlr.sh refresh [--dev <port>] [--yes]
    rlr.sh export [--dev <port>] [--file <path>]
   rlr.sh import [--dev <port>] [--file <path>]
@@ -1347,22 +1369,42 @@ Subcommands:
       --dev <port>  Serial port. Auto-detected if omitted and
                     exactly one candidate exists.
 
-  calibrate-battery <measured_mv>
-    One-shot battery ADC calibration: sends CALIBRATE BATTERY <mv>
-    then CONFIG COMMIT. Measure the battery with a multimeter first
-    (ideally with USB/charge power disconnected, so you're reading
-    the battery alone and not charge-line bias), then run this with
-    that reading in millivolts, e.g.:
+  calibrate-battery (-r <measured_mv> | -m <multiplier>)
+    One-shot battery ADC calibration. Exactly one of -r/-m is
+    required — they're two different ways to arrive at the same
+    goal (a correct batt_mult), for two different situations:
 
-      rlr.sh calibrate-battery 4190
+      -r <measured_mv>   You can get a multimeter on the battery
+                          terminals right now. Measure it (ideally
+                          with USB/charge power disconnected, so
+                          you're reading the battery alone and not
+                          charge-line bias), then pass that reading:
 
-    The firmware averages a fresh raw ADC burst and derives
-    batt_mult = measured_mv / raw_avg, stages it, and CONFIG COMMIT
-    persists + reboots the device. Fixes the "fully charged but shows
-    a low percentage on the collector page" symptom, which happens
-    when a board's actual per-unit ADC divider doesn't match its
-    firmware's DEFAULT_CONFIG_BATT_MULT (a first-boot guess, not a
-    per-device measurement).
+                            rlr.sh calibrate-battery -r 4190
+
+                          Sends CALIBRATE BATTERY <mv>: the firmware
+                          averages a fresh raw ADC burst and derives
+                          batt_mult = measured_mv / raw_avg, then
+                          CONFIG COMMIT persists it.
+
+      -m <multiplier>     The device is sealed/inaccessible for a
+                          multimeter, but you already know (or want
+                          to copy) the right batt_mult constant —
+                          e.g. from an identical board you DID
+                          calibrate with -r:
+
+                            rlr.sh calibrate-battery -m 1.5
+
+                          Sends CONFIG SET batt_mult <value> +
+                          CONFIG COMMIT directly — no ADC read, no
+                          multimeter needed, just stages the exact
+                          number you give it.
+
+    Either way fixes the "fully charged but shows a low percentage
+    on the collector page" symptom, which happens when a board's
+    actual per-unit ADC divider doesn't match its firmware's
+    DEFAULT_CONFIG_BATT_MULT (a first-boot guess, not a per-device
+    measurement).
 
     Optional:
       --dev <port>  Serial port. Auto-detected if omitted and
