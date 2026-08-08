@@ -163,16 +163,17 @@
 // as only 3419 mV (a ~16% underestimate, badly understating charge
 // level on the telemetry page). Empirically recalibrated via the
 // serial console's CALIBRATE BATTERY workflow: batt_mult = 4070 /
-// battery_raw(2697) = 1.509084. Notably this lands within ~0.2% of
-// the RAK3401's own independently-calibrated value (1.506111, see
-// rak3401.h) — consistent with both WisBlock modules genuinely
-// sharing the same divider network, just not RAK's quoted constant
-// for it. Still just one sample; CALIBRATE BATTERY <measured_mv> on
-// first boot remains the source of truth per device.
+// battery_raw(2697) = 1.509084. An independently-calibrated RAK3401
+// unit landed at 1.506111 (see rak3401.h) — near-identical, so both
+// WisBlock modules apparently share the same divider network after
+// all, just not RAK's quoted constant for it. Rounded to a shared
+// 1.5f default for both boards; still just two samples — CALIBRATE
+// BATTERY <measured_mv> on first boot remains the source of truth
+// per device (see tools/rlr.sh calibrate-battery).
 #define DEFAULT_CONFIG_FREQ_HZ          915000000UL
 #define DEFAULT_CONFIG_BW_HZ            125000UL
 #define DEFAULT_CONFIG_SF               10
 #define DEFAULT_CONFIG_CR               5
 #define DEFAULT_CONFIG_TXP_DBM          22
-#define DEFAULT_CONFIG_BATT_MULT        1.509084f
+#define DEFAULT_CONFIG_BATT_MULT        1.5f
 #define DEFAULT_CONFIG_DISPLAY_NAME     "Rptr-RAK4631"

@@ -811,6 +811,43 @@ cmd_announce() {
     echo "(e.g. restart the collector daemon) so this node can hear it back."
 }
 
+cmd_calibrate_battery() {
+    local dev="" mv=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dev)      dev="$2"; shift 2 ;;
+            --help|-h)  usage; exit 0 ;;
+            *)
+                if [ -z "$mv" ]; then mv="$1"; shift
+                else die "unknown calibrate-battery flag: $1 (use --help)"; fi
+                ;;
+        esac
+    done
+
+    [ -n "$mv" ] || die "usage: rlr.sh calibrate-battery [--dev <port>] <measured_mv>
+  Measure the battery voltage with a multimeter first (ideally with
+  USB/charge power disconnected, to rule out charge-line bias), then
+  pass that reading in millivolts, e.g.:
+    rlr.sh calibrate-battery 4190"
+
+    if [ -z "$dev" ]; then
+        dev=$(pick_port_interactive "for calibrate-battery") || exit 1
+    fi
+    [ -e "$dev" ] || die "serial port not found: $dev"
+
+    require_serial_helper
+
+    log "calibrating battery on $dev against measured ${mv} mV ..."
+    if ! "$PYTHON_BIN" "$SERIAL_HELPER" calibrate-battery "$dev" "$mv"; then
+        die "CALIBRATE BATTERY failed (see output above)."
+    fi
+    echo
+    echo "Calibrated + committed. The device reboots automatically after"
+    echo "CONFIG COMMIT — re-run 'rlr.sh show' in a few seconds to confirm"
+    echo "the new batt_mult stuck, or 'rlr.sh announce' to push a fresh"
+    echo "telemetry reading to your collector."
+}
+
 cmd_refresh() {
     local dev="" confirm_flag=""
     while [ $# -gt 0 ]; do
@@ -1221,6 +1258,7 @@ Usage:
   rlr.sh configure [--dev <port>] [--<field> <value> ...]
    rlr.sh show [--dev <port>]
    rlr.sh announce [--dev <port>]
+   rlr.sh calibrate-battery [--dev <port>] <measured_mv>
    rlr.sh refresh [--dev <port>] [--yes]
    rlr.sh export [--dev <port>] [--file <path>]
   rlr.sh import [--dev <port>] [--file <path>]
@@ -1304,6 +1342,27 @@ Subcommands:
     won't fix it; the collector itself may need to (re-)announce
     (e.g. restart the collector daemon) so this node can hear it
     back.
+
+    Optional:
+      --dev <port>  Serial port. Auto-detected if omitted and
+                    exactly one candidate exists.
+
+  calibrate-battery <measured_mv>
+    One-shot battery ADC calibration: sends CALIBRATE BATTERY <mv>
+    then CONFIG COMMIT. Measure the battery with a multimeter first
+    (ideally with USB/charge power disconnected, so you're reading
+    the battery alone and not charge-line bias), then run this with
+    that reading in millivolts, e.g.:
+
+      rlr.sh calibrate-battery 4190
+
+    The firmware averages a fresh raw ADC burst and derives
+    batt_mult = measured_mv / raw_avg, stages it, and CONFIG COMMIT
+    persists + reboots the device. Fixes the "fully charged but shows
+    a low percentage on the collector page" symptom, which happens
+    when a board's actual per-unit ADC divider doesn't match its
+    firmware's DEFAULT_CONFIG_BATT_MULT (a first-boot guess, not a
+    per-device measurement).
 
     Optional:
       --dev <port>  Serial port. Auto-detected if omitted and
@@ -1455,6 +1514,7 @@ case "$SUBCMD" in
     configure)  cmd_configure "$@" ;;
     show)       cmd_show "$@" ;;
     announce)   cmd_announce "$@" ;;
+    calibrate-battery) cmd_calibrate_battery "$@" ;;
     refresh)    cmd_refresh "$@" ;;
     export)     cmd_export "$@" ;;
     import)     cmd_import "$@" ;;

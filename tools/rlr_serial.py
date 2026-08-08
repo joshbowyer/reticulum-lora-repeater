@@ -26,6 +26,15 @@ Subcommands (exactly one required):
                            board defaults; doesn't touch flash).
                            exit 0 on OK, 2 on ERR.
   config-commit <port>   — send "CONFIG COMMIT". exit 0 on OK, 2 on ERR.
+  calibrate-battery <port> <mv>
+                          — send "CALIBRATE BATTERY <mv>" then, only if
+                            that succeeds, "CONFIG COMMIT" (persists +
+                            reboots the device). One-shot: measure the
+                            battery with a multimeter first (ideally
+                            with USB/charge power disconnected so you're
+                            not reading charge-line bias), then run this
+                            with that reading in mV. exit 0 on OK, 2 on
+                            ERR from either step, 3 on port-open/timeout.
 
 Exit codes:
   0 — OK
@@ -262,6 +271,34 @@ def main():
         if len(args) != 1:
             print("usage: rlr_serial.py config-reset <port>", file=sys.stderr); sys.exit(1)
         sys.exit(cmd_send(args[0], "CONFIG RESET"))
+    if sub == "calibrate-battery":
+        if len(args) != 2:
+            print("usage: rlr_serial.py calibrate-battery <port> <measured_mv>", file=sys.stderr); sys.exit(1)
+        port, mv = args
+        ser = open_port(port)
+        if ser is None:
+            sys.exit(3)
+        with ser:
+            ok, payload, err = send(ser, f"CALIBRATE BATTERY {mv}", DEFAULT_TIMEOUT)
+            for line in payload:
+                print(line)
+            if not ok:
+                if err:
+                    print(f"error: {err}", file=sys.stderr)
+                sys.exit(2)
+            print("committing (device will reboot)...")
+            ok2, payload2, err2 = send(ser, "CONFIG COMMIT", DEFAULT_TIMEOUT)
+            for line in payload2:
+                print(line)
+            # A reboot right after CONFIG COMMIT's "OK" often tears down
+            # the port mid-read on the caller's next command anyway, but
+            # here we already got a clean OK from send() before that
+            # happens, so this is expected to succeed normally.
+            if not ok2:
+                if err2:
+                    print(f"error: {err2}", file=sys.stderr)
+                sys.exit(2)
+        sys.exit(0)
 
     print(f"unknown subcommand: {sub}", file=sys.stderr)
     _usage()
